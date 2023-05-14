@@ -6,7 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+prost = "0.11"
 raptor-code = "1.0.5"
+#tokio = "1.28.1"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1.14"
+tonic = "0.9"
 
 [[bin]]
 name = "uploader"
@@ -15,3 +20,6 @@ path = "src/uploader/main.rs"
 [[bin]]
 name = "downloader"
 path = "src/downloader/main.rs"
+
+[build-dependencies]
+tonic-build = "0.9"
