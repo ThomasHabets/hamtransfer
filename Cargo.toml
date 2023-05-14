@@ -6,3 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+raptor-code = "1.0.5"
+
+[[bin]]
+name = "uploader"
+path = "src/uploader/main.rs"
+
+[[bin]]
+name = "downloader"
+path = "src/downloader/main.rs"
