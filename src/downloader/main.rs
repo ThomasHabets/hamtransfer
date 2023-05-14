@@ -1,7 +1,6 @@
 use std::fs;
 
 use tokio_stream::StreamExt;
-use tonic::transport::Channel;
 
 use ax25::ax25_parser_client::Ax25ParserClient;
 use ax25::packet::FrameType::Ui;
@@ -20,28 +19,39 @@ pub mod aprs {
     tonic::include_proto!("aprs");
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Needed input:
-    let source_block_size = 6;
-    // let total_size = …
-
-    // Implementation.
+async fn _stream_files(
+    decoder: &mut raptor_code::SourceBlockDecoder,
+) -> Result<usize, Box<dyn std::error::Error>> {
     let mut encoding_symbol_length = 0;
-    let mut n = 0u32;
-    let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
+    let mut esi = 0;
+    while !decoder.fully_specified() {
+        let encoding_symbol = fs::read(format!("tmp/{}", esi)).expect("read data");
+        println!("Got id {}", esi);
 
-    let mut client = RouterServiceClient::connect("http://[::1]:12001").await?;
-    let mut parser = Ax25ParserClient::connect("http://[::1]:12001").await?;
+        encoding_symbol_length = encoding_symbol.len();
+        decoder.push_encoding_symbol(&encoding_symbol, esi);
+        esi += 1;
+    }
+    Ok(encoding_symbol_length)
+}
 
+async fn stream_rpc(
+    decoder: &mut raptor_code::SourceBlockDecoder,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    println!("Connecting…");
+    let mut client = RouterServiceClient::connect("http://[::1]:13001").await?;
+    let mut parser = Ax25ParserClient::connect("http://[::1]:13001").await?;
+
+    println!("Starting stream…");
     let mut stream = client
         .stream_frames(StreamRequest {})
         .await
         .unwrap()
         .into_inner();
 
-    while decoder.fully_specified() == false {
-        println!("Reading symbol {}", n);
+    println!("Awaiting data…");
+    let mut encoding_symbol_length = 0;
+    while !decoder.fully_specified() {
         //
         // Read from file:
         //let encoding_symbol = fs::read(format!("tmp/{}", n)).expect("read data");
@@ -58,21 +68,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .packet
             .unwrap();
 
-        let payload = match parsed.frame_type {
-            Some(Ui(ui)) => ui.payload,
+        let ui = match parsed.frame_type {
+            Some(Ui(ui)) => ui,
             _ => continue,
         };
-        let encoding_symbol = payload;
+        println!("Got id {}", ui.pid);
+        let encoding_symbol = ui.payload;
 
         encoding_symbol_length = encoding_symbol.len();
-        let esi = n;
+        let esi = ui.pid as u32;
         decoder.push_encoding_symbol(&encoding_symbol, esi);
-        n += 1;
     }
+    Ok(encoding_symbol_length)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Needed input:
+    let source_block_size = 19;
+    let total_size = 3684;
+
+    // Implementation.
+    let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
+
+    let encoding_symbol_length = stream_rpc(&mut decoder).await?;
+    //let encoding_symbol_length = _stream_files(&mut decoder).await?;
+
     println!("Fully specified!");
     let source_block_size = encoding_symbol_length * source_block_size;
-    let source_block = decoder.decode(source_block_size as usize).expect("decode");
+    let mut source_block = decoder.decode(source_block_size).expect("decode");
+    source_block.resize(total_size, 0);
     println!("{:?}", source_block);
     println!("{:?}", source_block.len());
+    fs::write("received.dat", source_block).expect("write block");
     Ok(())
 }

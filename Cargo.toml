@@ -6,7 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-std = "1.12.0"
 prost = "0.11"
+rand = "0.8.5"
 raptor-code = "1.0.5"
 #tokio = "1.28.1"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
@@ -23,3 +25,6 @@ path = "src/downloader/main.rs"
 
 [build-dependencies]
 tonic-build = "0.9"
+
+[profile.release]
+overflow-checks = true
