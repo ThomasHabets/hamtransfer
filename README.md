@@ -9,6 +9,36 @@ Hamtransfer is not a modem, but the protocol on top.
 Currently just has proof of concept code. But speeds are still pretty
 good. E.g. better than ZModem over standard 1200/9600bps packet.
 
+## Quick start
+
+This is not the final form of hamtransfer, obviously, but here's a
+step by step to testing the current code.
+
+1. Build [ax25ms][ax25ms].
+1. Start ax25ms's `./serial -p /dev/rfcomm0 -l '[::]:12001'` (both on
+   client and server)
+1. Build hamtransfer: `cargo build`
+   (binaries end up in `target/debug/` by default)
+1. Start downloader, using the downloading ax25ms `serial` port:
+   ```
+   downloader \
+       --router localhost:12001 \
+       --parser localhost:12001 \
+	   --output test.out
+   ```
+1. Start uploader, using the uploading ax25ms `serial` port:
+   ```
+   uploader \
+       --router localhost:12001 \
+       --parser localhost:12001 \
+	   --source M0XXX-1 \
+	   --input README.md
+   ```
+
+If download doesn't complete, just run uploader again without
+restarting the downloader. The downloader will exit when it has the
+whole file.
+
 ## Overall architecture
 
 Because `AF_AX25` sockets are only available on Linux, and are
