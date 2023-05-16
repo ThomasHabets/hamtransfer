@@ -1,11 +1,10 @@
-use std::fs;
-
-use tokio_stream::StreamExt;
-
 use ax25::ax25_parser_client::Ax25ParserClient;
 use ax25::packet::FrameType::Ui;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::StreamRequest;
+use std::fs;
+use structopt::StructOpt;
+use tokio_stream::StreamExt;
 
 pub mod ax25ms {
     // The string specified here must match the proto package name
@@ -17,6 +16,21 @@ pub mod ax25 {
 }
 pub mod aprs {
     tonic::include_proto!("aprs");
+}
+
+#[derive(StructOpt, Debug)]
+#[structopt()]
+struct Opt {
+    #[structopt(short = "r", long = "router")]
+    router: String,
+    #[structopt(short = "p", long = "parser")]
+    parser: String,
+
+    #[structopt(short = "o", long = "output")]
+    output: String,
+    // TODO: Use when implementing the requesting protocol.
+    // #[structopt(short = "S", long = "source")]
+    // source: String,
 }
 
 async fn _stream_files(
@@ -37,10 +51,10 @@ async fn _stream_files(
 
 async fn stream_rpc(
     decoder: &mut raptor_code::SourceBlockDecoder,
+    mut client: RouterServiceClient<tonic::transport::Channel>,
+    mut parser: Ax25ParserClient<tonic::transport::Channel>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     println!("Connecting…");
-    let mut client = RouterServiceClient::connect("http://[::1]:13001").await?;
-    let mut parser = Ax25ParserClient::connect("http://[::1]:13001").await?;
 
     println!("Starting stream…");
     let mut stream = client
@@ -84,22 +98,27 @@ async fn stream_rpc(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let opt = Opt::from_args();
+
     // Needed input:
+    // TODO: get this from metadata request.
     let source_block_size = 19;
     let total_size = 3684;
 
-    // Implementation.
+    println!("Running…");
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
-
-    let encoding_symbol_length = stream_rpc(&mut decoder).await?;
+    let client = RouterServiceClient::connect(opt.router).await?;
+    let parser = Ax25ParserClient::connect(opt.parser).await?;
+    let encoding_symbol_length = stream_rpc(&mut decoder, client, parser).await?;
     //let encoding_symbol_length = _stream_files(&mut decoder).await?;
 
-    println!("Fully specified!");
-    let source_block_size = encoding_symbol_length * source_block_size;
-    let mut source_block = decoder.decode(source_block_size).expect("decode");
+    println!("Downloaded!");
+    let mut source_block = decoder
+        .decode(encoding_symbol_length * source_block_size)
+        .expect("decode");
     source_block.resize(total_size, 0);
     println!("{:?}", source_block);
     println!("{:?}", source_block.len());
-    fs::write("received.dat", source_block).expect("write block");
+    fs::write(opt.output, source_block).expect("write block");
     Ok(())
 }
