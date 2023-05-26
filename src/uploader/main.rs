@@ -12,6 +12,7 @@ use std::convert::TryFrom;
 use std::fs;
 use std::time::Duration;
 use structopt::StructOpt;
+use tokio_stream::StreamExt;
 
 pub mod ax25ms {
     // The string specified here must match the proto package name
@@ -64,19 +65,46 @@ fn usize_to_float(f: usize) -> Option<f64> {
     Some(ret)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let opt = Opt::from_args();
+use std::str;
+async fn get_request(
+    stream: &mut tonic::Streaming<Frame>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    loop {
+        let frame = stream.next().await.unwrap().unwrap().payload;
+        let parsed = parser
+            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .await?
+            .into_inner()
+            .packet
+            .expect("surely the RPC reply has a packet");
+        let ui = match parsed.frame_type {
+            Some(ax25::packet::FrameType::Ui(ui)) => ui,
+            _ => continue,
+        };
 
-    println!("Running…");
-    let mut source_data = fs::read(opt.input).expect("read data");
+        let cmd = match str::from_utf8(&ui.payload) {
+            Ok(x) => x,
+            _ => {
+                //println!("Invalid request: {:?}", ui.payload);
+                continue;
+            }
+        };
+        return Ok(cmd.to_string());
+    }
+}
 
-    // TODO: Stop this hardcoding.
-    source_data.resize(3686, 0);
+async fn transmit(
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    src: String,
+    packet_size: usize,
+    nb_repair: u32,
+    source_data: Vec<u8>,
+    packets: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let len = source_data.len();
 
-    let packet_size = opt.size;
-    let nb_repair = u32::try_from(opt.repair).unwrap();
     let f =
         (usize_to_float(source_data.len()).unwrap() / usize_to_float(packet_size).unwrap()).ceil();
     let max_source_symbols = float_to_usize(f).unwrap();
@@ -92,14 +120,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n = encoder.nb_source_symbols() + nb_repair;
 
     // Transmit RPC.
-    let mut client = RouterServiceClient::connect(opt.router).await?;
-    let mut parser = Ax25ParserClient::connect(opt.parser).await?;
 
     println!("Total chunks: {}", n);
     let mut txlist: Vec<u32> = (0..n).step_by(1).collect();
     txlist.shuffle(&mut thread_rng());
 
+    let mut transmitted = 0;
     for esi in txlist {
+        transmitted += 1;
+        if transmitted > packets {
+            return Ok(());
+        }
         let encoding_symbol = encoder.fountain(esi);
         let len = encoding_symbol.len();
 
@@ -112,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let request = tonic::Request::new(SerializeRequest {
             packet: Some(Packet {
                 dst: "CQ".to_string(), // TODO: Set to callsign requesting.
-                src: opt.source.clone(),
+                src: src.clone(),
                 fcs: 0,
                 aprs: None,
                 repeater: vec![],
@@ -135,9 +166,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         });
         client.send(request).await?;
-        println!("Sent esi {} of size {}", esi, &len);
-        let millis: u64 = 8000 * len as u64 / 9600;
-        task::sleep(Duration::from_millis(millis)).await;
+        //println!("Sent esi {} of size {}", esi, &len);
+        if false {
+            let millis: u64 = 8000 * len as u64 / 9600;
+            task::sleep(Duration::from_millis(millis)).await;
+        }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+enum Request {
+    None,
+    Get {
+        frequency: String,
+        existing: u32,
+        id: String,
+    },
+}
+
+fn parse_request(s: String) -> Result<Request, Box<dyn std::error::Error>> {
+    if !s.starts_with('G') {
+        return Ok(Request::None);
+    }
+    Ok(Request::Get {
+        frequency: "0".to_string(),
+        existing: 0,
+        id: "abc123".to_string(),
+    })
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let opt = Opt::from_args();
+
+    println!("Running…");
+    let mut client = RouterServiceClient::connect(opt.router).await?;
+    let mut parser = Ax25ParserClient::connect(opt.parser).await?;
+
+    println!("Awaiting requests…");
+    let mut stream = client
+        .stream_frames(ax25ms::StreamRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    loop {
+        let req = get_request(&mut stream, &mut parser).await?;
+        let preq = match parse_request(req) {
+            Ok(Request::None) => continue,
+            Ok(Request::Get {
+                frequency,
+                existing,
+                id,
+            }) => Request::Get {
+                frequency,
+                existing,
+                id,
+            },
+            _ => continue,
+        };
+        println!("Request: {:?}", preq);
+
+        let mut source_data = fs::read(&opt.input).expect("read data");
+        // TODO: Stop this hardcoding.
+        source_data.resize(3686, 0);
+        let packet_size = opt.size;
+        let packets = 100;
+        let nb_repair = u32::try_from(opt.repair).unwrap();
+
+        transmit(
+            &mut client,
+            &mut parser,
+            opt.source.clone(),
+            packet_size,
+            nb_repair,
+            source_data,
+            packets,
+        )
+        .await?;
+    }
 }

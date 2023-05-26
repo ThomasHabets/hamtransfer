@@ -26,6 +26,9 @@ struct Opt {
     #[structopt(short = "p", long = "parser")]
     parser: String,
 
+    #[structopt(short = "s", long = "source")]
+    source: String,
+
     #[structopt(short = "o", long = "output")]
     output: String,
     // TODO: Use when implementing the requesting protocol.
@@ -49,12 +52,44 @@ async fn _stream_files(
     Ok(encoding_symbol_length)
 }
 
+async fn make_packet(
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    src: &str,
+    payload: String,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let req = tonic::Request::new(ax25::SerializeRequest {
+        packet: Some(ax25::Packet {
+            dst: "CQ".to_string(), // TODO: set callsign.
+            src: src.to_string(),
+            fcs: 0,
+            aprs: None,
+            repeater: vec![],
+            command_response: false,
+            command_response_la: true,
+            rr_dst1: false,
+            rr_extseq: false,
+            frame_type: Some(ax25::packet::FrameType::Ui(ax25::packet::Ui {
+                pid: 0xF0_i32, // TODO: some protocol ID?
+                push: 0,
+                payload: payload.into_bytes(),
+            })),
+        }),
+    });
+    Ok(parser.serialize(req).await?.into_inner().payload)
+}
+
 async fn stream_rpc(
+    opt: &Opt,
     decoder: &mut raptor_code::SourceBlockDecoder,
     mut client: RouterServiceClient<tonic::transport::Channel>,
     mut parser: Ax25ParserClient<tonic::transport::Channel>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    println!("Connecting…");
+    let cmd = make_packet(&mut parser, &opt.source, "G 0 0 abc123".to_string()).await?;
+    client
+        .send(tonic::Request::new(ax25ms::SendRequest {
+            frame: Some(ax25ms::Frame { payload: cmd }),
+        }))
+        .await?;
 
     println!("Starting stream…");
     let mut stream = client
@@ -80,7 +115,7 @@ async fn stream_rpc(
             .await?
             .into_inner()
             .packet
-            .unwrap();
+            .expect("surely the RPC reply has a packet");
 
         let ui = match parsed.frame_type {
             Some(Ui(ui)) => ui,
@@ -105,11 +140,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source_block_size = 19;
     let total_size = 3684;
 
-    println!("Running…");
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
-    let client = RouterServiceClient::connect(opt.router).await?;
-    let parser = Ax25ParserClient::connect(opt.parser).await?;
-    let encoding_symbol_length = stream_rpc(&mut decoder, client, parser).await?;
+    println!("Connecting…");
+    let client = RouterServiceClient::connect(opt.router.clone()).await?;
+    println!("Connecting…");
+    let parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
+
+    println!("Running…");
+    let encoding_symbol_length = stream_rpc(&opt, &mut decoder, client, parser).await?;
     //let encoding_symbol_length = _stream_files(&mut decoder).await?;
 
     println!("Downloaded!");
@@ -117,8 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .decode(encoding_symbol_length * source_block_size)
         .expect("decode");
     source_block.resize(total_size, 0);
-    println!("{:?}", source_block);
-    println!("{:?}", source_block.len());
+    //println!("{:?}", source_block);
+    println!("Downloaded size {:?}", source_block.len());
     fs::write(opt.output, source_block).expect("write block");
     Ok(())
 }
