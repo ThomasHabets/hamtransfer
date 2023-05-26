@@ -6,8 +6,10 @@ use ax25::SerializeRequest;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::Frame;
 use ax25ms::SendRequest;
+use lazy_static::lazy_static;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
+use regex::Regex;
 use std::convert::TryFrom;
 use std::fs;
 use std::time::Duration;
@@ -185,15 +187,21 @@ enum Request {
     },
 }
 
-fn parse_request(s: String) -> Result<Request, Box<dyn std::error::Error>> {
-    if !s.starts_with('G') {
-        return Ok(Request::None);
+lazy_static! {
+    static ref GET_RE: Regex = Regex::new(r"G ([^ ]+) (\d+) (\w+)").unwrap();
+}
+
+fn parse_request(s: &str) -> Result<Request, Box<dyn std::error::Error>> {
+    if let Some(m) = GET_RE.captures(s) {
+        if let Ok(existing) = m[2].parse::<u32>() {
+            return Ok(Request::Get {
+                frequency: m[1].to_string(),
+                existing,
+                id: m[3].to_string(),
+            });
+        }
     }
-    Ok(Request::Get {
-        frequency: "0".to_string(),
-        existing: 0,
-        id: "abc123".to_string(),
-    })
+    Ok(Request::None)
 }
 
 #[tokio::main]
@@ -213,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let req = get_request(&mut stream, &mut parser).await?;
-        let preq = match parse_request(req) {
+        let preq = match parse_request(&req) {
             Ok(Request::None) => continue,
             Ok(Request::Get {
                 frequency,
