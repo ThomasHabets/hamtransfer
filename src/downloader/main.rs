@@ -128,11 +128,35 @@ async fn stream_rpc(
     Ok(encoding_symbol_length)
 }
 
-#[derive(Debug, Clone)]
-struct MyError;
+#[derive(Debug)]
+enum DownloaderError {
+    RPCError(tonic::transport::Error),
+    StreamError(Box<dyn std::error::Error>),
+    ChecksumMismatch(String, String),
+}
+impl From<Box<dyn std::error::Error>> for DownloaderError {
+    fn from(error: Box<dyn std::error::Error>) -> Self {
+        DownloaderError::StreamError(error)
+    }
+}
+impl From<tonic::transport::Error> for DownloaderError {
+    fn from(error: tonic::transport::Error) -> Self {
+        DownloaderError::RPCError(error)
+    }
+}
+
+impl std::fmt::Display for DownloaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::RPCError(e) => write!(f, "RPC Error: {e}"),
+            Self::StreamError(e) => write!(f, "Stream Error: {e}"),
+            Self::ChecksumMismatch(chk1, chk2) => write!(f, "Checksum Mismatch: {chk1} != {chk2}"),
+        }
+    }
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), DownloaderError> {
     let opt = Opt::from_args();
 
     // Needed input:
@@ -155,9 +179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("decode");
     source_block.resize(total_size, 0);
 
-    if sha256::digest(&source_block[..]) != opt.filename {
-        println!("ERROR TODO TODO TODO!");
-        return Ok(());
+    let digest = sha256::digest(&source_block[..]);
+    if digest != opt.filename {
+        return Err(DownloaderError::ChecksumMismatch(digest, opt.filename));
     }
 
     println!("Downloaded size {:?}", source_block.len());

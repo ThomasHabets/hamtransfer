@@ -225,7 +225,7 @@ fn parse_request(src: &str, s: &str) -> Result<Request, Box<dyn std::error::Erro
 async fn handle_get(
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
-    block: &Vec<u8>,
+    block: &[u8],
     dst: &str,
     src: String,
     tag: String,
@@ -235,7 +235,7 @@ async fn handle_get(
     println!("Handling GET");
     //let mut source_data = fs::read(&block.file).expect("read data");
     // TODO: Stop this hardcoding.
-    let mut source_data = block.clone();
+    let mut source_data = block.to_vec();
     source_data.resize(3686, 0);
     let packet_size = source_data.len();
     let packets = 100;
