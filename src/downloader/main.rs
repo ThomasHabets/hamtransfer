@@ -31,35 +31,25 @@ struct Opt {
 
     #[structopt(short = "o", long = "output")]
     output: String,
+
+    #[structopt(short = "d", long = "dst", default_value = "CQ")]
+    dst: String,
+
     // TODO: Use when implementing the requesting protocol.
     // #[structopt(short = "S", long = "source")]
     // source: String,
-}
-
-async fn _stream_files(
-    decoder: &mut raptor_code::SourceBlockDecoder,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut encoding_symbol_length = 0;
-    let mut esi = 0;
-    while !decoder.fully_specified() {
-        let encoding_symbol = fs::read(format!("tmp/{}", esi)).expect("read data");
-        println!("Got id {}", esi);
-
-        encoding_symbol_length = encoding_symbol.len();
-        decoder.push_encoding_symbol(&encoding_symbol, esi);
-        esi += 1;
-    }
-    Ok(encoding_symbol_length)
+    filename: String,
 }
 
 async fn make_packet(
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
     src: &str,
     payload: String,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let req = tonic::Request::new(ax25::SerializeRequest {
         packet: Some(ax25::Packet {
-            dst: "CQ".to_string(), // TODO: set callsign.
+            dst: dst.to_string(), // TODO: set callsign.
             src: src.to_string(),
             fcs: 0,
             aprs: None,
@@ -83,8 +73,15 @@ async fn stream_rpc(
     decoder: &mut raptor_code::SourceBlockDecoder,
     mut client: RouterServiceClient<tonic::transport::Channel>,
     mut parser: Ax25ParserClient<tonic::transport::Channel>,
+    filename: &str,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let cmd = make_packet(&mut parser, &opt.source, "G 0 0 abc123".to_string()).await?;
+    let cmd = make_packet(
+        &mut parser,
+        &opt.dst,
+        &opt.source,
+        format!("G 1234 0 0 {}", filename).to_string(),
+    )
+    .await?;
     client
         .send(tonic::Request::new(ax25ms::SendRequest {
             frame: Some(ax25ms::Frame { payload: cmd }),
@@ -131,6 +128,9 @@ async fn stream_rpc(
     Ok(encoding_symbol_length)
 }
 
+#[derive(Debug, Clone)]
+struct MyError;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::from_args();
@@ -143,19 +143,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
     println!("Connecting…");
     let client = RouterServiceClient::connect(opt.router.clone()).await?;
-    println!("Connecting…");
     let parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
     println!("Running…");
-    let encoding_symbol_length = stream_rpc(&opt, &mut decoder, client, parser).await?;
-    //let encoding_symbol_length = _stream_files(&mut decoder).await?;
+    let encoding_symbol_length =
+        stream_rpc(&opt, &mut decoder, client, parser, &opt.filename).await?;
 
     println!("Downloaded!");
     let mut source_block = decoder
         .decode(encoding_symbol_length * source_block_size)
         .expect("decode");
     source_block.resize(total_size, 0);
-    //println!("{:?}", source_block);
+
+    if sha256::digest(&source_block[..]) != opt.filename {
+        println!("ERROR TODO TODO TODO!");
+        return Ok(());
+    }
+
     println!("Downloaded size {:?}", source_block.len());
     fs::write(opt.output, source_block).expect("write block");
     Ok(())

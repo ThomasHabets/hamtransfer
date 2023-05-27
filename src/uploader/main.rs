@@ -36,9 +36,8 @@ struct Opt {
     #[structopt(short = "p", long = "parser")]
     parser: String,
 
-    #[structopt(short = "i", long = "input")]
-    input: String,
-
+    // #[structopt(short = "i", long = "input")]
+    // input: String,
     #[structopt(short = "s", long = "packet-size", default_value = "200")]
     size: usize,
 
@@ -71,7 +70,7 @@ use std::str;
 async fn get_request(
     stream: &mut tonic::Streaming<Frame>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<(String, String), Box<dyn std::error::Error>> {
     loop {
         let frame = stream.next().await.unwrap().unwrap().payload;
         let parsed = parser
@@ -92,14 +91,16 @@ async fn get_request(
                 continue;
             }
         };
-        return Ok(cmd.to_string());
+        return Ok((parsed.src, cmd.to_string()));
     }
 }
 
 async fn transmit(
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
     src: String,
+    tag: String,
     packet_size: usize,
     nb_repair: u32,
     source_data: Vec<u8>,
@@ -144,7 +145,7 @@ async fn transmit(
         // TODO: surely we can default these values?
         let request = tonic::Request::new(SerializeRequest {
             packet: Some(Packet {
-                dst: "CQ".to_string(), // TODO: Set to callsign requesting.
+                dst: dst.to_string(),
                 src: src.clone(),
                 fcs: 0,
                 aprs: None,
@@ -181,27 +182,86 @@ async fn transmit(
 enum Request {
     None,
     Get {
+        dst: String,
         frequency: String,
+        tag: u16,
         existing: u32,
         id: String,
     },
 }
 
 lazy_static! {
-    static ref GET_RE: Regex = Regex::new(r"G ([^ ]+) (\d+) (\w+)").unwrap();
+    static ref GET_RE: Regex = Regex::new(r"G (\d+) ([^ ]+) (\d+) (\w+)").unwrap();
 }
 
-fn parse_request(s: &str) -> Result<Request, Box<dyn std::error::Error>> {
+fn parse_request(src: &str, s: &str) -> Result<Request, Box<dyn std::error::Error>> {
     if let Some(m) = GET_RE.captures(s) {
-        if let Ok(existing) = m[2].parse::<u32>() {
-            return Ok(Request::Get {
-                frequency: m[1].to_string(),
-                existing,
-                id: m[3].to_string(),
-            });
-        }
+        let tag = match m[1].parse::<u16>() {
+            Ok(x) => x,
+            _ => {
+                println!("Tag is not u16");
+                return Ok(Request::None);
+            }
+        };
+        let existing = match m[2].parse::<u32>() {
+            Ok(x) => x,
+            _ => {
+                println!("`existing` is not u32");
+                return Ok(Request::None);
+            }
+        };
+        println!("Got request from {} {:?}", &src, s);
+        return Ok(Request::Get {
+            dst: src.to_string(),
+            frequency: m[1].to_string(),
+            tag,
+            existing,
+            id: m[4].to_string(),
+        });
     }
     Ok(Request::None)
+}
+
+async fn handle_get(
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    block: &Vec<u8>,
+    dst: &str,
+    src: String,
+    tag: String,
+    packet_size: usize,
+    nb_repair: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Handling GET");
+    //let mut source_data = fs::read(&block.file).expect("read data");
+    // TODO: Stop this hardcoding.
+    let mut source_data = block.clone();
+    source_data.resize(3686, 0);
+    let packet_size = source_data.len();
+    let packets = 100;
+
+    transmit(
+        client,
+        parser,
+        dst,
+        src,
+        tag,
+        packet_size,
+        nb_repair,
+        source_data,
+        packets,
+    )
+    .await
+}
+
+fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    //match blockmap.get(id.as_str()) {
+    let connection = rusqlite::Connection::open("blockmap.sqlite").unwrap();
+    let mut stmt = connection.prepare("SELECT data FROM blocks WHERE id=?")?;
+
+    let data: Vec<u8> = stmt.query_row([&id], |row| Ok(row.get(0).unwrap()))?;
+    println!("Read data len {}", data.len());
+    Ok(data)
 }
 
 #[tokio::main]
@@ -219,39 +279,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .into_inner();
 
+    let nb_repair = u32::try_from(opt.repair).unwrap();
     loop {
-        let req = get_request(&mut stream, &mut parser).await?;
-        let preq = match parse_request(&req) {
+        let (src, req) = get_request(&mut stream, &mut parser).await?;
+        match parse_request(&src, &req) {
             Ok(Request::None) => continue,
             Ok(Request::Get {
+                dst,
                 frequency,
+                tag,
                 existing,
                 id,
-            }) => Request::Get {
-                frequency,
-                existing,
-                id,
+            }) => match get_block(&id) {
+                Ok(block) => {
+                    handle_get(
+                        &mut client,
+                        &mut parser,
+                        &block,
+                        &dst,
+                        opt.source.clone(),
+                        tag.to_string(),
+                        opt.size,
+                        nb_repair,
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    println!("Unknown block {}: {:?}", id, e);
+                }
             },
             _ => continue,
         };
-        println!("Request: {:?}", preq);
-
-        let mut source_data = fs::read(&opt.input).expect("read data");
-        // TODO: Stop this hardcoding.
-        source_data.resize(3686, 0);
-        let packet_size = opt.size;
-        let packets = 100;
-        let nb_repair = u32::try_from(opt.repair).unwrap();
-
-        transmit(
-            &mut client,
-            &mut parser,
-            opt.source.clone(),
-            packet_size,
-            nb_repair,
-            source_data,
-            packets,
-        )
-        .await?;
+        //println!("Request: {:?}", preq);
     }
 }
