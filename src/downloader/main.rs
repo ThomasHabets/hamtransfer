@@ -2,10 +2,16 @@ use ax25::ax25_parser_client::Ax25ParserClient;
 use ax25::packet::FrameType::Ui;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::StreamRequest;
+use futures::{pin_mut, select};
+use futures_timer::Delay;
+use futures_util::FutureExt;
+use futures_util::StreamExt;
 use rand::Rng;
 use std::fs;
 use structopt::StructOpt;
-use tokio_stream::StreamExt;
+use tokio::time::Duration;
+
+//use tokio_stream::StreamExt;
 
 pub mod ax25ms {
     tonic::include_proto!("ax25ms");
@@ -37,6 +43,9 @@ struct Opt {
 
     #[structopt(long = "packet_loss", default_value = "0.0")]
     packet_loss: f32,
+
+    #[structopt(long = "timeout", default_value = "1.0")]
+    timeout: f32,
 
     // Positional argument.
     roothash: String,
@@ -79,7 +88,7 @@ async fn request_block(
     src: &str,
     hash: &str,
     tag: u16,
-    existing: u64,
+    existing: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cmd = make_packet(
         parser,
@@ -96,13 +105,35 @@ async fn request_block(
     Ok(())
 }
 
+async fn receive_frame(
+    stream: &mut tonic::Streaming<ax25ms::Frame>,
+    timeout: f32,
+) -> Result<Vec<u8>, DownloaderError> {
+    let ms = (timeout * 1000.0) as u64;
+    let sfut = stream.next().fuse();
+    let tfut = Delay::new(Duration::from_millis(ms)).fuse();
+    pin_mut!(sfut, tfut);
+    select! {
+        f = sfut => {
+            let frame = f.unwrap().unwrap().payload;
+             Ok(frame)
+        },
+        _ = tfut => {
+            println!("Timeout!");
+            Err(DownloaderError::Timeout)
+        }
+    }
+}
+
 async fn receive_streamed_block(
     decoder: &mut raptor_code::SourceBlockDecoder,
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
-    size: usize, // Only needed for progress bar.
+    size: usize,                // Only needed for progress bar.
+    bytes_received: &mut usize, // Only needed for progress bar.
     packet_loss: f32,
-) -> Result<usize, Box<dyn std::error::Error>> {
+    timeout: f32,
+) -> Result<usize, DownloaderError> {
     println!("Starting stream…");
     let mut stream = client
         .stream_frames(StreamRequest {})
@@ -112,14 +143,11 @@ async fn receive_streamed_block(
 
     println!("Awaiting data…");
     let mut encoding_symbol_length = 0;
-    let mut bytes_received = 0_usize;
     let mut rng = rand::thread_rng();
     while !decoder.fully_specified() {
-        //
-        // Read from file:
-        //let encoding_symbol = fs::read(format!("tmp/{}", n)).expect("read data");
-        //
-        let frame = stream.next().await.unwrap().unwrap().payload;
+        // Get frame.
+        let frame = receive_frame(&mut stream, timeout).await?;
+
         if rng.gen::<f32>() < packet_loss {
             continue;
         }
@@ -139,13 +167,13 @@ async fn receive_streamed_block(
             _ => continue,
         };
         let encoding_symbol = ui.payload;
-        bytes_received += encoding_symbol.len();
+        *bytes_received += encoding_symbol.len();
         println!(
             "Got id {} size {}: Total {} = {}%",
             ui.pid,
             encoding_symbol.len(),
             bytes_received,
-            100 * bytes_received / size
+            100 * *bytes_received / size
         );
 
         encoding_symbol_length = encoding_symbol.len();
@@ -167,25 +195,55 @@ async fn download_block(
     source_block_size: usize,
 ) -> Result<Vec<u8>, DownloaderError> {
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
+    let tag = 1234_u16; // TODO
     request_block(
         &mut client,
         &mut parser,
         &opt.dst,
         &opt.source,
         hash,
-        1234, // TODO
+        tag,
         0,
     )
     .await?;
 
-    let len = receive_streamed_block(
-        &mut decoder,
-        &mut client,
-        &mut parser,
-        size,
-        opt.packet_loss,
-    )
-    .await?;
+    let mut bytes_done = 0_usize;
+    let len;
+    loop {
+        match receive_streamed_block(
+            &mut decoder,
+            &mut client,
+            &mut parser,
+            size,
+            &mut bytes_done,
+            opt.packet_loss,
+            opt.timeout,
+        )
+        .await
+        {
+            Ok(l) => {
+                len = l;
+                break;
+            }
+            Err(DownloaderError::Timeout) => {
+                println!("Requesting more");
+                request_block(
+                    &mut client,
+                    &mut parser,
+                    &opt.dst,
+                    &opt.source,
+                    hash,
+                    tag,
+                    bytes_done,
+                )
+                .await?;
+                continue;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
     println!("Downloaded!");
     let mut source_block = decoder.decode(len * source_block_size).expect("decode");
     source_block.resize(size, 0); // Will only ever shrink.
@@ -200,8 +258,10 @@ async fn download_block(
 #[derive(Debug)]
 enum DownloaderError {
     RPCError(tonic::transport::Error),
+    RPCStatusError(tonic::Status),
     StreamError(Box<dyn std::error::Error>),
     ChecksumMismatch(String, String),
+    Timeout,
 }
 impl From<Box<dyn std::error::Error>> for DownloaderError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
@@ -213,13 +273,20 @@ impl From<tonic::transport::Error> for DownloaderError {
         DownloaderError::RPCError(error)
     }
 }
+impl From<tonic::Status> for DownloaderError {
+    fn from(error: tonic::Status) -> Self {
+        DownloaderError::RPCStatusError(error)
+    }
+}
 
 impl std::fmt::Display for DownloaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::RPCError(e) => write!(f, "RPC Error: {e}"),
+            Self::RPCStatusError(e) => write!(f, "RPC status Error: {e}"),
             Self::StreamError(e) => write!(f, "Stream Error: {e}"),
             Self::ChecksumMismatch(chk1, chk2) => write!(f, "Checksum Mismatch: {chk1} != {chk2}"),
+            Self::Timeout => write!(f, "Got timeout :-("),
         }
     }
 }
