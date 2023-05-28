@@ -46,7 +46,7 @@ struct Opt {
     #[structopt(long = "packet_loss", default_value = "0.0")]
     packet_loss: f32,
 
-    #[structopt(long = "timeout", default_value = "1.0")]
+    #[structopt(long = "timeout", default_value = "2.0")]
     timeout: f32,
 
     // Positional argument.
@@ -64,7 +64,7 @@ async fn make_packet(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let req = tonic::Request::new(ax25::SerializeRequest {
         packet: Some(ax25::Packet {
-            dst: dst.to_string(), // TODO: set callsign.
+            dst: dst.to_string(),
             src: src.to_string(),
             fcs: 0,
             aprs: None,

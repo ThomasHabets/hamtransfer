@@ -10,6 +10,7 @@ use lazy_static::lazy_static;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -35,8 +36,9 @@ struct Opt {
     #[structopt(short = "p", long = "parser")]
     parser: String,
 
-    // #[structopt(short = "i", long = "input")]
-    // input: String,
+    #[structopt(short = "i", long = "input")]
+    input: String,
+
     #[structopt(short = "s", long = "packet-size", default_value = "200")]
     size: usize,
 
@@ -172,7 +174,7 @@ async fn transmit(
         });
         client.send(request).await?;
         //println!("Sent esi {} of size {}", esi, &len);
-        if false {
+        if true {
             let millis: u64 = 8000 * len as u64 / 9600;
             task::sleep(Duration::from_millis(millis)).await;
         }
@@ -316,7 +318,8 @@ async fn handle_get(
         source_data.len() + max_source_symbols - excess
     };
     source_data.resize(padded_size, 0); // multiple of packet_size.
-    let packets = source_data.len() / packet_size + 5; // TODO: tweak default overhead.
+    let packets = ((source_data.len() / packet_size) as f32 * 1.2 + 2.0) as usize; // TODO: tweak default overhead.
+    println!("Sending {} packets", packets);
 
     transmit(
         client,
@@ -332,6 +335,85 @@ async fn handle_get(
     .await
 }
 
+#[derive(Debug)]
+pub enum UploaderError {
+    RPCError(tonic::transport::Error),
+    RPCStatusError(tonic::Status),
+    IOError(std::io::Error),
+    StreamError(Box<dyn std::error::Error>),
+    ChecksumMismatch(String, String),
+    Timeout,
+    HashNotFound,
+}
+impl From<Box<dyn std::error::Error>> for UploaderError {
+    fn from(error: Box<dyn std::error::Error>) -> Self {
+        UploaderError::StreamError(error)
+    }
+}
+impl From<tonic::transport::Error> for UploaderError {
+    fn from(error: tonic::transport::Error) -> Self {
+        UploaderError::RPCError(error)
+    }
+}
+impl From<tonic::Status> for UploaderError {
+    fn from(error: tonic::Status) -> Self {
+        UploaderError::RPCStatusError(error)
+    }
+}
+impl From<std::io::Error> for UploaderError {
+    fn from(error: std::io::Error) -> Self {
+        UploaderError::IOError(error)
+    }
+}
+
+struct File {
+    name: String,
+    hash: String,
+}
+
+pub struct DirectoryIndex {
+    files: HashMap<String, File>,
+    base: String,
+}
+
+impl DirectoryIndex {
+    pub fn new(dir: &str) -> Result<DirectoryIndex, UploaderError> {
+        let mut files = HashMap::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = fs::metadata(&path)?;
+            //let fn = Path::new("./foo.file");
+            let hash = sha256::try_digest(path.as_path()).unwrap();
+            let fname = path.file_name().unwrap().to_str().unwrap();
+            if metadata.is_file() {
+                files.insert(
+                    hash.clone(),
+                    File {
+                        name: fname.to_string(),
+                        hash: hash.clone(),
+                    },
+                );
+            }
+            println!("Indexed file: {} {}", hash, fname);
+        }
+        Ok(DirectoryIndex {
+            base: dir.to_string(),
+            files: files,
+        })
+    }
+
+    pub fn get_block(&self, hash: &str) -> Result<Vec<u8>, UploaderError> {
+        match self.files.get(hash) {
+            Some(f) => {
+                println!("Found hash {} at {}", hash, f.name);
+                Ok(fs::read(std::path::Path::new(&self.base).join(&f.name))?)
+            }
+            None => Err(UploaderError::HashNotFound),
+        }
+    }
+}
+
 fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     //match blockmap.get(id.as_str()) {
     let connection = rusqlite::Connection::open("blockmap.sqlite").unwrap();
@@ -345,6 +427,8 @@ fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::from_args();
+
+    let index = DirectoryIndex::new(&opt.input).unwrap();
 
     println!("Running…");
     let mut client = RouterServiceClient::connect(opt.router).await?;
@@ -368,7 +452,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tag,
                 existing: _,
                 id,
-            }) => match get_block(&id) {
+            }) => match index.get_block(&id) {
                 Ok(block) => {
                     handle_get(
                         &mut client,
@@ -386,7 +470,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Unknown block {}: {:?}", id, e);
                 }
             },
-            Ok(Request::Meta { dst, hash }) => match get_block(&hash) {
+            Ok(Request::Meta { dst, hash }) => match index.get_block(&hash) {
                 Ok(block) => {
                     handle_meta(
                         &mut client,
