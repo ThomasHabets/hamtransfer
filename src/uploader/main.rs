@@ -100,7 +100,7 @@ async fn transmit(
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
     src: String,
-    tag: String,
+    _tag: String, // TODO: add to protocol.
     packet_size: usize,
     nb_repair: u32,
     source_data: Vec<u8>,
@@ -183,8 +183,10 @@ enum Request {
     None,
     Get {
         dst: String,
+        #[allow(dead_code)]
         frequency: String,
         tag: u16,
+        #[allow(dead_code)]
         existing: u32,
         id: String,
     },
@@ -285,9 +287,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Request::None) => continue,
             Ok(Request::Get {
                 dst,
-                frequency,
+                frequency: _,
                 tag,
-                existing,
+                existing: _,
                 id,
             }) => match get_block(&id) {
                 Ok(block) => {

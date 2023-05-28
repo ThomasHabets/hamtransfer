@@ -7,7 +7,6 @@ use structopt::StructOpt;
 use tokio_stream::StreamExt;
 
 pub mod ax25ms {
-    // The string specified here must match the proto package name
     tonic::include_proto!("ax25ms");
 }
 
@@ -35,12 +34,13 @@ struct Opt {
     #[structopt(short = "d", long = "dst", default_value = "CQ")]
     dst: String,
 
-    // TODO: Use when implementing the requesting protocol.
-    // #[structopt(short = "S", long = "source")]
-    // source: String,
-    filename: String,
+    // Positional argument.
+    roothash: String,
 }
 
+/*
+* make a UI packet with given payload
+*/
 async fn make_packet(
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
@@ -68,18 +68,20 @@ async fn make_packet(
     Ok(parser.serialize(req).await?.into_inner().payload)
 }
 
-async fn stream_rpc(
-    opt: &Opt,
-    decoder: &mut raptor_code::SourceBlockDecoder,
-    mut client: RouterServiceClient<tonic::transport::Channel>,
-    mut parser: Ax25ParserClient<tonic::transport::Channel>,
-    filename: &str,
-) -> Result<usize, Box<dyn std::error::Error>> {
+async fn request_block(
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
+    src: &str,
+    hash: &str,
+    tag: u16,
+    existing: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cmd = make_packet(
-        &mut parser,
-        &opt.dst,
-        &opt.source,
-        format!("G 1234 0 0 {}", filename).to_string(),
+        parser,
+        dst,
+        src,
+        format!("G {} 0 {} {}", tag, existing, hash).to_string(),
     )
     .await?;
     client
@@ -87,7 +89,15 @@ async fn stream_rpc(
             frame: Some(ax25ms::Frame { payload: cmd }),
         }))
         .await?;
+    Ok(())
+}
 
+async fn receive_streamed_block(
+    decoder: &mut raptor_code::SourceBlockDecoder,
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    size: usize, // Only needed for progress bar.
+) -> Result<usize, Box<dyn std::error::Error>> {
     println!("Starting stream…");
     let mut stream = client
         .stream_frames(StreamRequest {})
@@ -97,6 +107,7 @@ async fn stream_rpc(
 
     println!("Awaiting data…");
     let mut encoding_symbol_length = 0;
+    let mut bytes_received = 0_usize;
     while !decoder.fully_specified() {
         //
         // Read from file:
@@ -118,14 +129,56 @@ async fn stream_rpc(
             Some(Ui(ui)) => ui,
             _ => continue,
         };
-        println!("Got id {}", ui.pid);
         let encoding_symbol = ui.payload;
+        bytes_received += encoding_symbol.len();
+        println!(
+            "Got id {} size {}: Total {} = {}%",
+            ui.pid,
+            encoding_symbol.len(),
+            bytes_received,
+            100 * bytes_received / size
+        );
 
         encoding_symbol_length = encoding_symbol.len();
         let esi = ui.pid as u32;
         decoder.push_encoding_symbol(&encoding_symbol, esi);
     }
     Ok(encoding_symbol_length)
+}
+
+/*
+* Request a block, until fully received.
+*/
+async fn download_block(
+    opt: &Opt,
+    mut client: RouterServiceClient<tonic::transport::Channel>,
+    mut parser: Ax25ParserClient<tonic::transport::Channel>,
+    hash: &str,
+    size: usize,
+    source_block_size: usize,
+) -> Result<Vec<u8>, DownloaderError> {
+    let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
+    request_block(
+        &mut client,
+        &mut parser,
+        &opt.dst,
+        &opt.source,
+        hash,
+        1234, // TODO
+        0,
+    )
+    .await?;
+
+    let len = receive_streamed_block(&mut decoder, &mut client, &mut parser, size).await?;
+    println!("Downloaded!");
+    let mut source_block = decoder.decode(len * source_block_size).expect("decode");
+    source_block.resize(size, 0); // Will only ever shrink.
+
+    let digest = sha256::digest(&source_block[..]);
+    if digest != hash {
+        return Err(DownloaderError::ChecksumMismatch(digest, hash.to_string()));
+    }
+    Ok(source_block)
 }
 
 #[derive(Debug)]
@@ -164,25 +217,20 @@ async fn main() -> Result<(), DownloaderError> {
     let source_block_size = 19;
     let total_size = 3684;
 
-    let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
     println!("Connecting…");
     let client = RouterServiceClient::connect(opt.router.clone()).await?;
     let parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
     println!("Running…");
-    let encoding_symbol_length =
-        stream_rpc(&opt, &mut decoder, client, parser, &opt.filename).await?;
-
-    println!("Downloaded!");
-    let mut source_block = decoder
-        .decode(encoding_symbol_length * source_block_size)
-        .expect("decode");
-    source_block.resize(total_size, 0);
-
-    let digest = sha256::digest(&source_block[..]);
-    if digest != opt.filename {
-        return Err(DownloaderError::ChecksumMismatch(digest, opt.filename));
-    }
+    let source_block = download_block(
+        &opt,
+        client,
+        parser,
+        &opt.roothash,
+        total_size,
+        source_block_size,
+    )
+    .await?;
 
     println!("Downloaded size {:?}", source_block.len());
     fs::write(opt.output, source_block).expect("write block");
