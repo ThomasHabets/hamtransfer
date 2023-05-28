@@ -19,25 +19,23 @@ step by step to testing the current code.
    client and server)
 1. Build hamtransfer: `cargo build`
    (binaries end up in `target/debug/` by default)
-1. Start downloader, using the downloading ax25ms `serial` port:
-   ```
-   downloader \
-       --router localhost:12001 \
-       --parser localhost:12001 \
-	   --output test.out
-   ```
 1. Start uploader, using the uploading ax25ms `serial` port:
    ```
    uploader \
        --router localhost:12001 \
        --parser localhost:12001 \
 	   --source M0XXX-1 \
-	   --input README.md
+	   --input testdata   # directory with data
    ```
-
-If download doesn't complete, just run uploader again without
-restarting the downloader. The downloader will exit when it has the
-whole file.
+   You'll see a file listing, with checksums.
+1. Start downloader, using the downloading ax25ms `serial` port:
+   ```
+   downloader \
+       --router localhost:12001 \
+       --parser localhost:12001 \
+	   --output test.out
+	   checksum-from-the-uploader-file-listing
+   ```
 
 ## Overall architecture
 
@@ -60,6 +58,37 @@ for example by using [Direwolf][direwolf].
 ```
 Radio <audio cables> Direwolf <loopback serial> ax25ms serial <gRPC> hamtransfer
 ```
+
+## Performance
+
+As of 2023-05-28, before the protocol has been fixed to remove a
+roundtrip, a 10kB file can go at 5576 bps.
+
+I don't really even understand how it can be that fast, because that
+was with 239 byte payloads, which takes ~200ms airtime, and with the
+Kenwood D74 set to 200ms TX Delay, it should top out at 4800bps.
+
+With an SDR it looks more like ~10ms of carrier before modulation
+starts, so maybe it's 200ms with 1200bps, but only 25ms with 9600?
+
+Reasons why it's not faster, and misc rambling notes:
+* One needless roundtrip. Protocol will be fixed to avoid this.
+* Packet size is not big. Bigger tends to make the D74 crash.
+  * Overhead without repeaters is 18 bytes, so with 200 byte payload
+    that's 8.25% overhead. 8807bps theoretical max just from that.
+  * Time before transmitting:
+    * Maybe T107?
+    * T102 slot time (randomized) before key-up.
+    * TXDELAY is time between key-up and packet.
+	  * 300ms by default with direwolf.
+	  * [20ms is good. There are ones with 1ms](http://www.symek.com/g/pacmod.html)
+	  * Speed formula: (8*size)/(sec+8*size/9600).
+	* AXDELAY, if using repeaters. Not used?
+    * Optionally plus T105, remote receiver sync.
+  * Time after transmitting:
+    * TXTail (default 30ms on D74, though I see 11ms with SDR)
+    * T108 is time after packet before re-keying.
+* Looks like there are gaps between packets when sent via D74.
 
 ## Protocol
 
