@@ -238,8 +238,8 @@ async fn handle_get(
     //let mut source_data = fs::read(&block.file).expect("read data");
     // TODO: Stop this hardcoding.
     let mut source_data = block.to_vec();
-    source_data.resize(3686, 0);
-    let packets = 100;
+    source_data.resize(3686, 0); // multiple of packet_size.
+    let packets = source_data.len() / packet_size + 5; // TODO: tweak default overhead.
 
     transmit(
         client,
