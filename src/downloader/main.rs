@@ -2,6 +2,7 @@ use ax25::ax25_parser_client::Ax25ParserClient;
 use ax25::packet::FrameType::Ui;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::StreamRequest;
+use rand::Rng;
 use std::fs;
 use structopt::StructOpt;
 use tokio_stream::StreamExt;
@@ -33,6 +34,9 @@ struct Opt {
 
     #[structopt(short = "d", long = "dst", default_value = "CQ")]
     dst: String,
+
+    #[structopt(long = "packet_loss", default_value = "0.0")]
+    packet_loss: f32,
 
     // Positional argument.
     roothash: String,
@@ -97,6 +101,7 @@ async fn receive_streamed_block(
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     size: usize, // Only needed for progress bar.
+    packet_loss: f32,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     println!("Starting stream…");
     let mut stream = client
@@ -108,12 +113,16 @@ async fn receive_streamed_block(
     println!("Awaiting data…");
     let mut encoding_symbol_length = 0;
     let mut bytes_received = 0_usize;
+    let mut rng = rand::thread_rng();
     while !decoder.fully_specified() {
         //
         // Read from file:
         //let encoding_symbol = fs::read(format!("tmp/{}", n)).expect("read data");
         //
         let frame = stream.next().await.unwrap().unwrap().payload;
+        if rng.gen::<f32>() < packet_loss {
+            continue;
+        }
 
         //
         // Parse UI frame.
@@ -169,7 +178,14 @@ async fn download_block(
     )
     .await?;
 
-    let len = receive_streamed_block(&mut decoder, &mut client, &mut parser, size).await?;
+    let len = receive_streamed_block(
+        &mut decoder,
+        &mut client,
+        &mut parser,
+        size,
+        opt.packet_loss,
+    )
+    .await?;
     println!("Downloaded!");
     let mut source_block = decoder.decode(len * source_block_size).expect("decode");
     source_block.resize(size, 0); // Will only ever shrink.
