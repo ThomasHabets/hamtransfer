@@ -6,7 +6,9 @@ use futures::{pin_mut, select};
 use futures_timer::Delay;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
+use lazy_static::lazy_static;
 use rand::Rng;
+use regex::Regex;
 use std::fs;
 use structopt::StructOpt;
 use tokio::time::Duration;
@@ -116,7 +118,7 @@ async fn receive_frame(
     select! {
         f = sfut => {
             let frame = f.unwrap().unwrap().payload;
-             Ok(frame)
+            Ok(frame)
         },
         _ = tfut => {
             println!("Timeout!");
@@ -291,20 +293,89 @@ impl std::fmt::Display for DownloaderError {
     }
 }
 
+async fn get_meta(
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
+    src: &str,
+    hash: &str,
+    timeout: f32,
+) -> Result<(usize, usize), DownloaderError> {
+    let cmd = make_packet(parser, dst, src, format!("M {}", hash).to_string()).await?;
+    client
+        .send(tonic::Request::new(ax25ms::SendRequest {
+            frame: Some(ax25ms::Frame { payload: cmd }),
+        }))
+        .await?;
+    let mut stream = client
+        .stream_frames(StreamRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    loop {
+        let frame = receive_frame(&mut stream, timeout).await?;
+        let parsed = parser
+            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .await?
+            .into_inner()
+            .packet
+            .expect("surely the RPC reply has a packet");
+        let ui = match parsed.frame_type {
+            Some(ax25::packet::FrameType::Ui(ui)) => ui,
+            _ => continue,
+        };
+        let reply = match std::str::from_utf8(&ui.payload) {
+            Ok(x) => x,
+            _ => {
+                continue;
+            }
+        };
+        let m = match META_REPLY_RE.captures(reply) {
+            Some(x) => x,
+            None => continue,
+        };
+        if m[1] != *hash {
+            continue;
+        }
+        let block = match m[2].parse::<usize>() {
+            Ok(x) => x,
+            _ => continue,
+        };
+        let size = match m[3].parse::<usize>() {
+            Ok(x) => x,
+            _ => continue,
+        };
+        return Ok((block, size));
+    }
+}
+
+lazy_static! {
+    static ref META_REPLY_RE: Regex = Regex::new(r"m (\w+) (\d+) (\d+)").unwrap();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), DownloaderError> {
     let opt = Opt::from_args();
 
-    // Needed input:
-    // TODO: get this from metadata request.
-    let source_block_size = 19;
-    let total_size = 3684;
-
     println!("Connecting…");
-    let client = RouterServiceClient::connect(opt.router.clone()).await?;
-    let parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
+    let mut client = RouterServiceClient::connect(opt.router.clone()).await?;
+    let mut parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
-    println!("Running…");
+    println!("Getting metadata…");
+
+    let (source_block_size, total_size) = get_meta(
+        &mut client,
+        &mut parser,
+        &opt.dst,
+        &opt.source,
+        &opt.roothash,
+        opt.timeout,
+    )
+    .await?;
+    println!("Source block size: {}", source_block_size);
+    println!("Total size: {}", total_size);
+
+    println!("Getting data…");
     let source_block = download_block(
         &opt,
         client,

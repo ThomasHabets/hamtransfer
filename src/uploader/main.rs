@@ -10,7 +10,6 @@ use lazy_static::lazy_static;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
-use std::convert::TryFrom;
 use std::fs;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -95,6 +94,11 @@ async fn get_request(
     }
 }
 
+fn max_source_syms(size: usize, packet_size: usize) -> usize {
+    let f = (usize_to_float(size).unwrap() / usize_to_float(packet_size).unwrap()).ceil();
+    float_to_usize(f).unwrap()
+}
+
 async fn transmit(
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
@@ -108,9 +112,7 @@ async fn transmit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let len = source_data.len();
 
-    let f =
-        (usize_to_float(source_data.len()).unwrap() / usize_to_float(packet_size).unwrap()).ceil();
-    let max_source_symbols = float_to_usize(f).unwrap();
+    let max_source_symbols = max_source_syms(source_data.len(), packet_size);
 
     println!("Max source symbols: {}", max_source_symbols);
     println!("Total len: {}", len);
@@ -181,6 +183,10 @@ async fn transmit(
 #[derive(Debug)]
 enum Request {
     None,
+    Meta {
+        dst: String,
+        hash: String,
+    },
     Get {
         dst: String,
         #[allow(dead_code)]
@@ -194,6 +200,7 @@ enum Request {
 
 lazy_static! {
     static ref GET_RE: Regex = Regex::new(r"G (\d+) ([^ ]+) (\d+) (\w+)").unwrap();
+    static ref META_RE: Regex = Regex::new(r"M (\w+)").unwrap();
 }
 
 fn parse_request(src: &str, s: &str) -> Result<Request, Box<dyn std::error::Error>> {
@@ -221,7 +228,69 @@ fn parse_request(src: &str, s: &str) -> Result<Request, Box<dyn std::error::Erro
             id: m[4].to_string(),
         });
     }
+    if let Some(m) = META_RE.captures(s) {
+        return Ok(Request::Meta {
+            dst: src.to_string(),
+            hash: m[1].to_string(),
+        });
+    }
     Ok(Request::None)
+}
+
+/*
+* TODO: merge with exact duplicate in downloader
+*/
+async fn make_packet(
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
+    src: &str,
+    payload: String,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let req = tonic::Request::new(ax25::SerializeRequest {
+        packet: Some(ax25::Packet {
+            dst: dst.to_string(), // TODO: set callsign.
+            src: src.to_string(),
+            fcs: 0,
+            aprs: None,
+            repeater: vec![],
+            command_response: false,
+            command_response_la: true,
+            rr_dst1: false,
+            rr_extseq: false,
+            frame_type: Some(ax25::packet::FrameType::Ui(ax25::packet::Ui {
+                pid: 0xF0_i32, // TODO: some protocol ID?
+                push: 0,
+                payload: payload.into_bytes(),
+            })),
+        }),
+    });
+    Ok(parser.serialize(req).await?.into_inner().payload)
+}
+
+async fn handle_meta(
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    block: &[u8],
+    dst: &str,
+    src: String,
+    hash: String,
+    packet_size: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let size = block.len();
+    let max_source_symbols = max_source_syms(size, packet_size);
+    let reply = make_packet(
+        parser,
+        dst,
+        &src,
+        format!("m {} {} {}", hash, max_source_symbols, size),
+    )
+    .await?;
+    client
+        .send(tonic::Request::new(ax25ms::SendRequest {
+            frame: Some(ax25ms::Frame { payload: reply }),
+        }))
+        .await?;
+    Ok(())
 }
 
 async fn handle_get(
@@ -235,10 +304,18 @@ async fn handle_get(
     nb_repair: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Handling GET");
-    //let mut source_data = fs::read(&block.file).expect("read data");
-    // TODO: Stop this hardcoding.
     let mut source_data = block.to_vec();
-    source_data.resize(3686, 0); // multiple of packet_size.
+
+    // Pad to nearest payload size.
+    let max_source_symbols = max_source_syms(block.len(), packet_size);
+
+    let excess = source_data.len() % max_source_symbols;
+    let padded_size = if excess == 0 {
+        source_data.len()
+    } else {
+        source_data.len() + max_source_symbols - excess
+    };
+    source_data.resize(padded_size, 0); // multiple of packet_size.
     let packets = source_data.len() / packet_size + 5; // TODO: tweak default overhead.
 
     transmit(
@@ -309,7 +386,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Unknown block {}: {:?}", id, e);
                 }
             },
-            _ => continue,
+            Ok(Request::Meta { dst, hash }) => match get_block(&hash) {
+                Ok(block) => {
+                    handle_meta(
+                        &mut client,
+                        &mut parser,
+                        &block,
+                        &dst,
+                        opt.source.clone(),
+                        hash,
+                        opt.size,
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    println!("Unknown block {}: {:?}", hash, e);
+                }
+            },
+            Err(_x) => continue,
         };
         //println!("Request: {:?}", preq);
     }
