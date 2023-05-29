@@ -73,6 +73,7 @@ starts, so maybe it's 200ms with 1200bps, but only 25ms with 9600?
 
 Reasons why it's not faster, and misc rambling notes:
 * One needless roundtrip. Protocol will be fixed to avoid this.
+  * This should get the speed up to 6040bps.
 * Packet size is not big. Bigger tends to make the D74 crash.
   * Overhead without repeaters is 18 bytes, so with 200 byte payload
     that's 8.25% overhead. 8807bps theoretical max just from that.
@@ -89,6 +90,11 @@ Reasons why it's not faster, and misc rambling notes:
     * TXTail (default 30ms on D74, though I see 11ms with SDR)
     * T108 is time after packet before re-keying.
 * Looks like there are gaps between packets when sent via D74.
+
+2023-05-29 experiment with 1200 byte packets for 10kB and removed
+extra roundtrip give best run 8024bps. 83% of theoretical max. Most of
+that is probably due to the fact that there's always that one
+roundtrip.
 
 ## Protocol
 
