@@ -329,7 +329,6 @@ impl From<std::io::Error> for UploaderError {
 
 struct File {
     name: String,
-    hash: String,
 }
 
 pub struct DirectoryIndex {
@@ -352,7 +351,6 @@ impl DirectoryIndex {
                     hash.clone(),
                     File {
                         name: fname.to_string(),
-                        hash: hash.clone(),
                     },
                 );
             }
@@ -360,7 +358,7 @@ impl DirectoryIndex {
         }
         Ok(DirectoryIndex {
             base: dir.to_string(),
-            files: files,
+            files,
         })
     }
 
@@ -375,6 +373,7 @@ impl DirectoryIndex {
     }
 }
 
+#[allow(dead_code)]
 fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     //match blockmap.get(id.as_str()) {
     let connection = rusqlite::Connection::open("blockmap.sqlite").unwrap();
