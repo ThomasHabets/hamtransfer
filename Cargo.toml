@@ -26,11 +26,15 @@ tonic = "0.9"
 
 [[bin]]
 name = "uploader"
-path = "src/uploader/main.rs"
+path = "src/bin/uploader.rs"
 
 [[bin]]
 name = "downloader"
-path = "src/downloader/main.rs"
+path = "src/bin/downloader.rs"
+
+[lib]
+name = "lib"
+path = "src/lib.rs"
 
 [build-dependencies]
 tonic-build = "0.9"
