@@ -1,7 +1,6 @@
 use ax25::ax25_parser_client::Ax25ParserClient;
 
 pub mod ax25ms {
-    // The string specified here must match the proto package name
     tonic::include_proto!("ax25ms");
 }
 pub mod ax25 {
@@ -11,9 +10,9 @@ pub mod aprs {
     tonic::include_proto!("aprs");
 }
 
-/*
-* make a UI packet with given payload
-*/
+///
+/// make a UI packet with given payload
+///
 pub async fn make_packet(
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,

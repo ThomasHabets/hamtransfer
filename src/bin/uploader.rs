@@ -120,22 +120,16 @@ async fn transmit(
     // Transmit RPC.
 
     println!("Total chunks: {}", n);
-    let mut txlist: Vec<u32> = (0..n).step_by(1).collect();
-    txlist.shuffle(&mut thread_rng());
+    let txlist = {
+        let mut x: Vec<u32> = (0..n).step_by(1).collect();
+        x.shuffle(&mut thread_rng());
+        x.resize(packets, 0);
+        x
+    };
 
-    let mut transmitted = 0;
     for esi in txlist {
-        transmitted += 1;
-        if transmitted > packets {
-            return Ok(());
-        }
         let encoding_symbol = encoder.fountain(esi);
         let len = encoding_symbol.len();
-
-        // Test code that writes it to disk.
-        //
-        //println!("{:?}", encoding_symbol.len());
-        fs::write(format!("tmp/{}", esi), &encoding_symbol).expect("write block");
 
         // TODO: surely we can default these values?
         let request = tonic::Request::new(SerializeRequest {
@@ -267,18 +261,22 @@ async fn handle_get(
     nb_repair: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Handling GET");
-    let mut source_data = block.to_vec();
 
     // Pad to nearest payload size.
     let max_source_symbols = max_source_syms(block.len(), packet_size);
 
-    let excess = source_data.len() % max_source_symbols;
-    let padded_size = if excess == 0 {
-        source_data.len()
-    } else {
-        source_data.len() + max_source_symbols - excess
+    let source_data = {
+        let mut x = block.to_vec();
+
+        let excess = x.len() % max_source_symbols;
+        let padded_size = if excess == 0 {
+            x.len()
+        } else {
+            x.len() + max_source_symbols - excess
+        };
+        x.resize(padded_size, 0); // multiple of packet_size.
+        x
     };
-    source_data.resize(padded_size, 0); // multiple of packet_size.
     let packets = ((source_data.len() / packet_size) as f32 * 1.2 + 2.0) as usize; // TODO: tweak default overhead.
     println!("Sending {} packets", packets);
 
@@ -331,6 +329,9 @@ struct File {
     name: String,
 }
 
+/// Block index created from a directory of files.
+///
+/// No recursive scanning, just files directly in the directory.
 pub struct DirectoryIndex {
     files: HashMap<String, File>,
     base: String,
@@ -373,6 +374,9 @@ impl DirectoryIndex {
     }
 }
 
+/// Get a block from sqlite database.
+///
+/// This is not used at the moment, but I have plans! :-)
 #[allow(dead_code)]
 fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     //match blockmap.get(id.as_str()) {
@@ -449,6 +453,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Err(_x) => continue,
         };
-        //println!("Request: {:?}", preq);
     }
 }
