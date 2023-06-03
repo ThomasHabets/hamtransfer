@@ -97,7 +97,7 @@ async fn transmit(
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
     src: String,
-    _tag: String, // TODO: add to protocol.
+    tag: u16,
     packet_size: usize,
     nb_repair: u32,
     source_data: Vec<u8>,
@@ -115,22 +115,25 @@ async fn transmit(
     // * packet_size is implicitly sent by seeing the block size.
 
     let mut encoder = raptor_code::SourceBlockEncoder::new(&source_data, max_source_symbols);
-    let n = encoder.nb_source_symbols() + nb_repair;
+    let n = (encoder.nb_source_symbols() + nb_repair) as u16;
 
     // Transmit RPC.
 
     println!("Total chunks: {}", n);
     let txlist = {
-        let mut x: Vec<u32> = (0..n).step_by(1).collect();
+        let mut x: Vec<u16> = (0..n).step_by(1).collect();
         x.shuffle(&mut thread_rng());
         x.resize(packets, 0);
         x
     };
 
     for esi in txlist {
-        let encoding_symbol = encoder.fountain(esi);
+        let encoding_symbol = encoder.fountain(esi as u32);
         let len = encoding_symbol.len();
 
+        let mut payload = tag.to_be_bytes().to_vec();
+        payload.extend(esi.to_be_bytes().to_vec());
+        payload.extend(encoding_symbol);
         // TODO: surely we can default these values?
         let request = tonic::Request::new(SerializeRequest {
             packet: Some(Packet {
@@ -144,9 +147,9 @@ async fn transmit(
                 rr_dst1: false,
                 rr_extseq: false,
                 frame_type: Some(ax25::packet::FrameType::Ui(Ui {
-                    pid: esi as i32, // TODO: move into payload.
+                    pid: 0xF0_i32,
                     push: 0,
-                    payload: encoding_symbol,
+                    payload: payload,
                 })),
             }),
         });
@@ -256,7 +259,7 @@ async fn handle_get(
     block: &[u8],
     dst: &str,
     src: String,
-    tag: String,
+    tag: u16,
     packet_size: usize,
     nb_repair: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -424,7 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &block,
                         &dst,
                         opt.source.clone(),
-                        tag.to_string(),
+                        tag,
                         opt.size,
                         nb_repair,
                     )

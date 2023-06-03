@@ -91,6 +91,7 @@ async fn receive_streamed_block(
     decoder: &mut raptor_code::SourceBlockDecoder,
     mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    tag: u16,
     size: usize,                // Only needed for progress bar.
     bytes_received: &mut usize, // Only needed for progress bar.
     packet_loss: f32,
@@ -121,24 +122,24 @@ async fn receive_streamed_block(
             Some(Ui(ui)) => ui,
             _ => continue,
         };
-        if ui.pid == 0xF0 {
-            // TODO: this is just to avoid reading commands as data,
-            // until we properly encode the esi.
+        let encoding_symbol = &ui.payload[4..ui.payload.len()];
+        *bytes_received += encoding_symbol.len();
+        let rcv_tag = u16::from_be_bytes(ui.payload[0..2].try_into().unwrap());
+        if tag != rcv_tag {
             continue;
         }
-        let encoding_symbol = ui.payload;
-        *bytes_received += encoding_symbol.len();
+        let esi = u16::from_be_bytes(ui.payload[2..4].try_into().unwrap());
+
         println!(
             "Got id {} size {}: Total {} = {}%",
-            ui.pid,
+            esi,
             encoding_symbol.len(),
             bytes_received,
             100 * *bytes_received / size
         );
 
         encoding_symbol_length = encoding_symbol.len();
-        let esi = ui.pid as u32;
-        decoder.push_encoding_symbol(&encoding_symbol, esi);
+        decoder.push_encoding_symbol(&encoding_symbol, esi as u32);
     }
     Ok(encoding_symbol_length)
 }
@@ -156,7 +157,7 @@ async fn download_block(
     source_block_size: usize,
 ) -> Result<Vec<u8>, DownloaderError> {
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
-    let tag = 1234_u16; // TODO
+    let tag = rand::thread_rng().gen::<u16>();
     request_block(
         &mut client,
         &mut parser,
@@ -175,6 +176,7 @@ async fn download_block(
             &mut decoder,
             &mut stream,
             &mut parser,
+            tag,
             size,
             &mut bytes_done,
             opt.packet_loss,
