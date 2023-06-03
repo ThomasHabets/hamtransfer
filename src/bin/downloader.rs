@@ -7,14 +7,14 @@ use futures_timer::Delay;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
 use lazy_static::lazy_static;
+use lib::{ax25, ax25ms, make_packet};
+use log::{debug, info, warn};
 use rand::Rng;
 use regex::Regex;
 use std::fs;
 use structopt::StructOpt;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
-
-use lib::{ax25, ax25ms, make_packet};
 
 #[derive(StructOpt, Debug)]
 #[structopt()]
@@ -81,7 +81,7 @@ async fn receive_frame(
             Ok(frame)
         },
         _ = tfut => {
-            println!("Timeout!");
+            warn!("Timeout!");
             Err(DownloaderError::Timeout)
         }
     }
@@ -97,7 +97,7 @@ async fn receive_streamed_block(
     packet_loss: f32,
     timeout: f32,
 ) -> Result<usize, DownloaderError> {
-    println!("Awaiting data…");
+    info!("Awaiting data…");
     let mut encoding_symbol_length = 0;
     let mut rng = rand::thread_rng();
     while !decoder.fully_specified() {
@@ -130,7 +130,7 @@ async fn receive_streamed_block(
         }
         let esi = u16::from_be_bytes(ui.payload[2..4].try_into().unwrap());
 
-        println!(
+        info!(
             "Got id {} size {}: Total {} = {}%",
             esi,
             encoding_symbol.len(),
@@ -189,7 +189,7 @@ async fn download_block(
                 break;
             }
             Err(DownloaderError::Timeout) => {
-                println!("Requesting more");
+                debug!("Requesting more");
                 request_block(
                     &mut client,
                     &mut parser,
@@ -207,7 +207,7 @@ async fn download_block(
             }
         }
     }
-    println!("Downloaded!");
+    info!("Downloaded!");
     let mut source_block = decoder.decode(len * source_block_size).expect("decode");
     source_block.resize(size, 0); // Will only ever shrink.
 
@@ -331,13 +331,21 @@ fn start_stream<'a>(
 async fn main() -> Result<(), DownloaderError> {
     let opt = Opt::from_args();
 
-    println!("Connecting…");
+    stderrlog::new()
+        .module(module_path!())
+        .quiet(false)
+        .verbosity(3)
+        .timestamp(stderrlog::Timestamp::Second)
+        .init()
+        .unwrap();
+
+    info!("Connecting…");
     // TODO: merge clients.
     let mut client = RouterServiceClient::connect(opt.router.clone()).await?;
     let stream_client = RouterServiceClient::connect(opt.router.clone()).await?;
     let mut parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
-    println!("Getting metadata…");
+    info!("Getting metadata…");
 
     let mut stream = start_stream(stream_client);
 
@@ -351,10 +359,10 @@ async fn main() -> Result<(), DownloaderError> {
         opt.timeout,
     )
     .await?;
-    println!("Source block size: {}", source_block_size);
-    println!("Total size: {}", total_size);
+    info!("Source block size: {}", source_block_size);
+    info!("Total size: {}", total_size);
 
-    println!("Getting data…");
+    info!("Getting data…");
     let source_block = download_block(
         &opt,
         &mut stream,
@@ -366,7 +374,7 @@ async fn main() -> Result<(), DownloaderError> {
     )
     .await?;
 
-    println!("Downloaded size {:?}", source_block.len());
+    info!("Downloaded size {:?}", source_block.len());
     fs::write(opt.output, source_block).expect("write block");
     Ok(())
 }

@@ -7,6 +7,7 @@ use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::Frame;
 use ax25ms::SendRequest;
 use lazy_static::lazy_static;
+use log::{debug, info, warn};
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
@@ -79,7 +80,7 @@ async fn get_request(
         let cmd = match str::from_utf8(&ui.payload) {
             Ok(x) => x,
             _ => {
-                //println!("Invalid request: {:?}", ui.payload);
+                //warn!("Invalid request: {:?}", ui.payload);
                 continue;
             }
         };
@@ -107,8 +108,8 @@ async fn transmit(
 
     let max_source_symbols = max_source_syms(source_data.len(), packet_size);
 
-    println!("Max source symbols: {}", max_source_symbols);
-    println!("Total len: {}", len);
+    debug!("Max source symbols: {}", max_source_symbols);
+    debug!("Total len: {}", len);
     // State that needs to be sent:
     // * max_source_symbols
     // * total size
@@ -119,7 +120,7 @@ async fn transmit(
 
     // Transmit RPC.
 
-    println!("Total chunks: {}", n);
+    debug!("Total chunks: {}", n);
     let txlist = {
         let mut x: Vec<u16> = (0..n).step_by(1).collect();
         x.shuffle(&mut thread_rng());
@@ -204,14 +205,14 @@ fn parse_get_request(
     let tag = match tag.parse::<u16>() {
         Ok(x) => x,
         _ => {
-            println!("Tag is not u16");
+            warn!("Tag is not u16");
             return Ok(vec![]);
         }
     };
     let existing = match existing.parse::<u32>() {
         Ok(x) => x,
         _ => {
-            println!("`existing` is not u32");
+            warn!("`existing` is not u32");
             return Ok(vec![]);
         }
     };
@@ -237,7 +238,7 @@ fn parse_get_request(
 
 fn parse_request(src: &str, s: &str) -> Result<Vec<Request>, Box<dyn std::error::Error>> {
     if let Some(m) = GET_RE.captures(s) {
-        println!("Got request from {} {:?}", &src, s);
+        info!("Got request from {} {:?}", &src, s);
         return parse_get_request(
             &m[1], /* cmd */
             src, &m[3], /* frequency */
@@ -291,7 +292,7 @@ async fn handle_get(
     packet_size: usize,
     nb_repair: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Handling GET");
+    debug!("Handling GET");
 
     // Pad to nearest payload size.
     let max_source_symbols = max_source_syms(block.len(), packet_size);
@@ -309,7 +310,7 @@ async fn handle_get(
         x
     };
     let packets = ((source_data.len() / packet_size) as f32 * 1.2 + 2.0) as usize; // TODO: tweak default overhead.
-    println!("Sending {} packets", packets);
+    debug!("Sending {} packets", packets);
 
     transmit(
         client,
@@ -386,7 +387,7 @@ impl DirectoryIndex {
                     },
                 );
             }
-            println!("Indexed file: {} {}", hash, fname);
+            info!("Indexed file: {} {}", hash, fname);
         }
         Ok(DirectoryIndex {
             base: dir.to_string(),
@@ -397,7 +398,7 @@ impl DirectoryIndex {
     pub fn get_block(&self, hash: &str) -> Result<Vec<u8>, UploaderError> {
         match self.files.get(hash) {
             Some(f) => {
-                println!("Found hash {} at {}", hash, f.name);
+                info!("Found hash {} at {}", hash, f.name);
                 Ok(fs::read(std::path::Path::new(&self.base).join(&f.name))?)
             }
             None => Err(UploaderError::HashNotFound),
@@ -415,7 +416,7 @@ fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut stmt = connection.prepare("SELECT data FROM blocks WHERE id=?")?;
 
     let data: Vec<u8> = stmt.query_row([&id], |row| Ok(row.get(0).unwrap()))?;
-    println!("Read data len {}", data.len());
+    info!("Read data len {}", data.len());
     Ok(data)
 }
 
@@ -450,7 +451,7 @@ async fn process_requests(
                     .await?;
                 }
                 Err(e) => {
-                    println!("Unknown block {}: {:?}", id, e);
+                    warn!("Unknown block {}: {:?}", id, e);
                 }
             },
             Request::Meta { dst, hash } => match index.get_block(&hash) {
@@ -467,7 +468,7 @@ async fn process_requests(
                     .await?;
                 }
                 Err(e) => {
-                    println!("Unknown block {}: {:?}", hash, e);
+                    warn!("Unknown block {}: {:?}", hash, e);
                 }
             },
         }
@@ -479,13 +480,21 @@ async fn process_requests(
 async fn main() -> Result<(), UploaderError> {
     let opt = Opt::from_args();
 
+    stderrlog::new()
+        .module(module_path!())
+        .quiet(false)
+        .verbosity(3)
+        .timestamp(stderrlog::Timestamp::Second)
+        .init()
+        .unwrap();
+
     let index = DirectoryIndex::new(&opt.input).unwrap();
 
-    println!("Running…");
+    info!("Running…");
     let mut client = RouterServiceClient::connect(opt.router.clone()).await?;
     let mut parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
-    println!("Awaiting requests…");
+    info!("Awaiting requests…");
     let mut stream = client
         .stream_frames(ax25ms::StreamRequest {})
         .await
@@ -500,7 +509,7 @@ async fn main() -> Result<(), UploaderError> {
                 process_requests(&mut client, &mut parser, &opt, &index, &reqs).await?;
             }
             Err(e) => {
-                println!("Unknown block: {:?}", e);
+                debug!("Unknown block: {:?}", e);
             }
         }
     }
