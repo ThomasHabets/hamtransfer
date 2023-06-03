@@ -172,7 +172,6 @@ async fn transmit(
 
 #[derive(Debug)]
 enum Request {
-    None,
     Meta {
         dst: String,
         hash: String,
@@ -189,42 +188,71 @@ enum Request {
 }
 
 lazy_static! {
-    static ref GET_RE: Regex = Regex::new(r"G (\d+) ([^ ]+) (\d+) (\w+)").unwrap();
+    //                                      cmd    tag   freq    exist hash
+    static ref GET_RE: Regex = Regex::new(r"(G|GM) (\d+) ([^ ]+) (\d+) (\w+)").unwrap();
     static ref META_RE: Regex = Regex::new(r"M (\w+)").unwrap();
 }
 
-fn parse_request(src: &str, s: &str) -> Result<Request, Box<dyn std::error::Error>> {
+fn parse_get_request(
+    cmd: &str,
+    dst: &str,
+    frequency: &str,
+    tag: &str,
+    existing: &str,
+    hash: &str,
+) -> Result<Vec<Request>, Box<dyn std::error::Error>> {
+    let tag = match tag.parse::<u16>() {
+        Ok(x) => x,
+        _ => {
+            println!("Tag is not u16");
+            return Ok(vec![]);
+        }
+    };
+    let existing = match existing.parse::<u32>() {
+        Ok(x) => x,
+        _ => {
+            println!("`existing` is not u32");
+            return Ok(vec![]);
+        }
+    };
+    let g = Request::Get {
+        dst: dst.to_string(),
+        frequency: frequency.to_string(),
+        tag,
+        existing,
+        id: hash.to_string(),
+    };
+    if cmd == "G" {
+        return Ok(vec![g]);
+    }
+    if cmd == "GM" {
+        let m = Request::Meta {
+            dst: dst.to_string(),
+            hash: hash.to_string(),
+        };
+        return Ok(vec![m, g]);
+    }
+    Ok(vec![])
+}
+
+fn parse_request(src: &str, s: &str) -> Result<Vec<Request>, Box<dyn std::error::Error>> {
     if let Some(m) = GET_RE.captures(s) {
-        let tag = match m[1].parse::<u16>() {
-            Ok(x) => x,
-            _ => {
-                println!("Tag is not u16");
-                return Ok(Request::None);
-            }
-        };
-        let existing = match m[2].parse::<u32>() {
-            Ok(x) => x,
-            _ => {
-                println!("`existing` is not u32");
-                return Ok(Request::None);
-            }
-        };
         println!("Got request from {} {:?}", &src, s);
-        return Ok(Request::Get {
-            dst: src.to_string(),
-            frequency: m[1].to_string(),
-            tag,
-            existing,
-            id: m[4].to_string(),
-        });
+        return parse_get_request(
+            &m[1], /* cmd */
+            src, &m[3], /* frequency */
+            &m[2], /* tag */
+            &m[4], /* existing */
+            &m[5], /* hash */
+        );
     }
     if let Some(m) = META_RE.captures(s) {
-        return Ok(Request::Meta {
+        return Ok(vec![Request::Meta {
             dst: src.to_string(),
             hash: m[1].to_string(),
-        });
+        }]);
     }
-    Ok(Request::None)
+    Ok(vec![])
 }
 
 async fn handle_meta(
@@ -391,35 +419,23 @@ fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(data)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let opt = Opt::from_args();
-
-    let index = DirectoryIndex::new(&opt.input).unwrap();
-
-    println!("Running…");
-    let mut client = RouterServiceClient::connect(opt.router).await?;
-    let mut parser = Ax25ParserClient::connect(opt.parser).await?;
-
-    println!("Awaiting requests…");
-    let mut stream = client
-        .stream_frames(ax25ms::StreamRequest {})
-        .await
-        .unwrap()
-        .into_inner();
-
+async fn process_requests(
+    mut client: &mut RouterServiceClient<tonic::transport::Channel>,
+    mut parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    opt: &Opt,
+    index: &DirectoryIndex,
+    reqs: &[Request],
+) -> Result<(), UploaderError> {
     let nb_repair = u32::try_from(opt.repair).unwrap();
-    loop {
-        let (src, req) = get_request(&mut stream, &mut parser).await?;
-        match parse_request(&src, &req) {
-            Ok(Request::None) => continue,
-            Ok(Request::Get {
+    for r in reqs {
+        match r {
+            Request::Get {
                 dst,
                 frequency: _,
                 tag,
                 existing: _,
                 id,
-            }) => match index.get_block(&id) {
+            } => match index.get_block(&id) {
                 Ok(block) => {
                     handle_get(
                         &mut client,
@@ -427,7 +443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &block,
                         &dst,
                         opt.source.clone(),
-                        tag,
+                        *tag,
                         opt.size,
                         nb_repair,
                     )
@@ -437,7 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Unknown block {}: {:?}", id, e);
                 }
             },
-            Ok(Request::Meta { dst, hash }) => match index.get_block(&hash) {
+            Request::Meta { dst, hash } => match index.get_block(&hash) {
                 Ok(block) => {
                     handle_meta(
                         &mut client,
@@ -445,7 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &block,
                         &dst,
                         opt.source.clone(),
-                        hash,
+                        hash.to_string(),
                         opt.size,
                     )
                     .await?;
@@ -454,7 +470,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Unknown block {}: {:?}", hash, e);
                 }
             },
-            Err(_x) => continue,
-        };
+        }
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), UploaderError> {
+    let opt = Opt::from_args();
+
+    let index = DirectoryIndex::new(&opt.input).unwrap();
+
+    println!("Running…");
+    let mut client = RouterServiceClient::connect(opt.router.clone()).await?;
+    let mut parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
+
+    println!("Awaiting requests…");
+    let mut stream = client
+        .stream_frames(ax25ms::StreamRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    loop {
+        let (src, req) = get_request(&mut stream, &mut parser).await?;
+
+        match parse_request(&src, &req) {
+            Ok(reqs) => {
+                process_requests(&mut client, &mut parser, &opt, &index, &reqs).await?;
+            }
+            Err(e) => {
+                println!("Unknown block: {:?}", e);
+            }
+        }
     }
 }
