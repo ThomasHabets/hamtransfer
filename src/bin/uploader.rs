@@ -186,12 +186,17 @@ enum Request {
         existing: u32,
         id: String,
     },
+    List {
+        dst: String,
+        tag: u16,
+    },
 }
 
 lazy_static! {
     //                                      cmd    tag   freq    exist hash
     static ref GET_RE: Regex = Regex::new(r"(G|GM) (\d+) ([^ ]+) (\d+) (\w+)").unwrap();
     static ref META_RE: Regex = Regex::new(r"M (\w+)").unwrap();
+    static ref LIST_RE: Regex = Regex::new(r"L (\d+)").unwrap();
 }
 
 fn parse_get_request(
@@ -251,6 +256,19 @@ fn parse_request(src: &str, s: &str) -> Result<Vec<Request>, Box<dyn std::error:
         return Ok(vec![Request::Meta {
             dst: src.to_string(),
             hash: m[1].to_string(),
+        }]);
+    }
+    if let Some(m) = LIST_RE.captures(s) {
+        let tag = match m[1].parse::<u16>() {
+            Ok(x) => x,
+            _ => {
+                warn!("Tag is not u16");
+                return Ok(vec![]);
+            }
+        };
+        return Ok(vec![Request::List {
+            dst: src.to_string(),
+            tag,
         }]);
     }
     Ok(vec![])
@@ -404,6 +422,22 @@ impl DirectoryIndex {
             None => Err(UploaderError::HashNotFound),
         }
     }
+
+    pub fn list(&self) -> Vec<FileEntry> {
+        let mut ret = Vec::new();
+        for (hash, f) in self.files.iter() {
+            ret.push(FileEntry {
+                name: f.name.clone(),
+                hash: hash.to_owned(),
+            });
+        }
+        ret
+    }
+}
+
+pub struct FileEntry {
+    name: String,
+    hash: String,
 }
 
 /// Get a block from sqlite database.
@@ -471,6 +505,25 @@ async fn process_requests(
                     warn!("Unknown block {}: {:?}", hash, e);
                 }
             },
+            Request::List { dst, tag } => {
+                // TODO: support longer file listings.
+                let mut txt = format!("l {}\n", tag);
+                for f in index.list() {
+                    txt.push_str(&format!("{} {}\n", f.hash, f.name));
+                }
+                let reply = make_packet(parser, dst, &opt.source, txt).await?;
+                client
+                    .send(tonic::Request::new(ax25ms::SendRequest {
+                        frame: Some(ax25ms::Frame { payload: reply }),
+                    }))
+                    .await?;
+                let reply = make_packet(parser, dst, &opt.source, format!("l {}", tag)).await?;
+                client
+                    .send(tonic::Request::new(ax25ms::SendRequest {
+                        frame: Some(ax25ms::Frame { payload: reply }),
+                    }))
+                    .await?;
+            }
         }
     }
     Ok(())

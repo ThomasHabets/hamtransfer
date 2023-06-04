@@ -254,6 +254,58 @@ impl std::fmt::Display for DownloaderError {
     }
 }
 
+async fn list(
+    mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    dst: &str,
+    src: &str,
+    timeout: f32,
+) -> Result<(), DownloaderError> {
+    let mut rng = rand::thread_rng();
+    let tag = rng.gen::<u16>();
+    let cmd = make_packet(parser, dst, src, format!("L {}", tag).to_string()).await?;
+    client
+        .send(tonic::Request::new(ax25ms::SendRequest {
+            frame: Some(ax25ms::Frame { payload: cmd }),
+        }))
+        .await?;
+    loop {
+        let frame = receive_frame(&mut stream, timeout).await?;
+        let parsed = parser
+            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .await?
+            .into_inner()
+            .packet
+            .expect("surely the RPC reply has a packet");
+        let ui = match parsed.frame_type {
+            Some(ax25::packet::FrameType::Ui(ui)) => ui,
+            _ => continue,
+        };
+        let reply = match std::str::from_utf8(&ui.payload) {
+            Ok(x) => x,
+            _ => {
+                continue;
+            }
+        };
+        if reply == format!("l {}", tag) {
+            return Ok(());
+        }
+        let m = match LIST_REPLY_RE.captures(reply) {
+            Some(x) => x,
+            None => continue,
+        };
+        if m[1] != format!("{}", tag) {
+            continue;
+        }
+        let list = reply.lines().collect::<Vec<&str>>();
+        println!("List reply:\n");
+        for entry in &list[1..] {
+            println!("{:?}", entry);
+        }
+    }
+}
+
 async fn get_meta(
     mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
     client: &mut RouterServiceClient<tonic::transport::Channel>,
@@ -308,6 +360,7 @@ async fn get_meta(
 
 lazy_static! {
     static ref META_REPLY_RE: Regex = Regex::new(r"m (\w+) (\d+) (\d+)").unwrap();
+    static ref LIST_REPLY_RE: Regex = Regex::new(r"(?m)l (\d+)\n.*").unwrap();
 }
 
 fn start_stream<'a>(
@@ -349,6 +402,16 @@ async fn main() -> Result<(), DownloaderError> {
 
     let mut stream = start_stream(stream_client);
 
+    list(
+        &mut stream,
+        &mut client,
+        &mut parser,
+        &opt.dst,
+        &opt.source,
+        opt.timeout,
+    )
+    .await?;
+    return Ok(());
     let (source_block_size, total_size) = get_meta(
         &mut stream,
         &mut client,
