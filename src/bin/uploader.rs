@@ -550,8 +550,7 @@ async fn main() -> Result<(), UploaderError> {
     info!("Awaiting requests…");
     let mut stream = client
         .stream_frames(ax25ms::StreamRequest {})
-        .await
-        .unwrap()
+        .await?
         .into_inner();
 
     loop {

@@ -39,6 +39,9 @@ struct Opt {
     #[structopt(long = "timeout", default_value = "2.0")]
     timeout: f32,
 
+    #[structopt(short = "l", long = "list")]
+    list: bool,
+
     // Positional argument.
     roothash: String,
 }
@@ -402,16 +405,18 @@ async fn main() -> Result<(), DownloaderError> {
 
     let mut stream = start_stream(stream_client);
 
-    list(
-        &mut stream,
-        &mut client,
-        &mut parser,
-        &opt.dst,
-        &opt.source,
-        opt.timeout,
-    )
-    .await?;
-    return Ok(());
+    if opt.list {
+        list(
+            &mut stream,
+            &mut client,
+            &mut parser,
+            &opt.dst,
+            &opt.source,
+            opt.timeout,
+        )
+        .await?;
+        return Ok(());
+    }
     let (source_block_size, total_size) = get_meta(
         &mut stream,
         &mut client,
