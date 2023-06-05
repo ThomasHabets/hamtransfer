@@ -92,7 +92,7 @@ async fn receive_frame(
 
 async fn receive_streamed_block(
     decoder: &mut raptor_code::SourceBlockDecoder,
-    mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
+    stream: &mut mpsc::Receiver<ax25ms::Frame>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     tag: u16,
     size: usize,                // Only needed for progress bar.
@@ -105,7 +105,7 @@ async fn receive_streamed_block(
     let mut rng = rand::thread_rng();
     while !decoder.fully_specified() {
         // Get frame.
-        let frame = receive_frame(&mut stream, timeout).await?;
+        let frame = receive_frame(stream, timeout).await?;
 
         if rng.gen::<f32>() < packet_loss {
             continue;
@@ -145,7 +145,7 @@ async fn receive_streamed_block(
         );
 
         encoding_symbol_length = encoding_symbol.len();
-        decoder.push_encoding_symbol(&encoding_symbol, esi as u32);
+        decoder.push_encoding_symbol(encoding_symbol, esi as u32);
     }
     Ok(encoding_symbol_length)
 }
@@ -155,7 +155,7 @@ async fn receive_streamed_block(
 */
 async fn download_block(
     opt: &Opt,
-    mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
+    stream: &mut mpsc::Receiver<ax25ms::Frame>,
     mut client: RouterServiceClient<tonic::transport::Channel>,
     mut parser: Ax25ParserClient<tonic::transport::Channel>,
     hash: &str,
@@ -180,7 +180,7 @@ async fn download_block(
     loop {
         match receive_streamed_block(
             &mut decoder,
-            &mut stream,
+            stream,
             &mut parser,
             tag,
             size,
@@ -261,7 +261,7 @@ impl std::fmt::Display for DownloaderError {
 }
 
 async fn list(
-    mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
+    stream: &mut mpsc::Receiver<ax25ms::Frame>,
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
@@ -277,7 +277,7 @@ async fn list(
         }))
         .await?;
     loop {
-        let frame = receive_frame(&mut stream, timeout).await?;
+        let frame = receive_frame(stream, timeout).await?;
         debug!("List got some frame");
         let parsed = parser
             .parse(tonic::Request::new(ax25::ParseRequest {
@@ -325,7 +325,7 @@ async fn list(
 }
 
 async fn get_meta(
-    mut stream: &mut mpsc::Receiver<ax25ms::Frame>,
+    stream: &mut mpsc::Receiver<ax25ms::Frame>,
     client: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
@@ -340,7 +340,7 @@ async fn get_meta(
         }))
         .await?;
     loop {
-        let frame = receive_frame(&mut stream, timeout).await?;
+        let frame = receive_frame(stream, timeout).await?;
         let parsed = parser
             .parse(tonic::Request::new(ax25::ParseRequest {
                 payload: frame,
@@ -384,7 +384,7 @@ lazy_static! {
     static ref LIST_REPLY_RE: Regex = Regex::new(r"(?m)l (\d+)\n.*").unwrap();
 }
 
-fn start_stream<'a>(
+fn start_stream(
     mut client: RouterServiceClient<tonic::transport::Channel>,
 ) -> tokio::sync::mpsc::Receiver<ax25ms::Frame> {
     let (tx, rx) = mpsc::channel(32);

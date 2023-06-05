@@ -154,7 +154,7 @@ async fn transmit(
                 frame_type: Some(ax25::packet::FrameType::Ui(Ui {
                     pid: 0xF0_i32,
                     push: 0,
-                    payload: payload,
+                    payload,
                 })),
             }),
         });
@@ -459,8 +459,8 @@ fn get_block(id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 }
 
 async fn process_requests(
-    mut client: &mut RouterServiceClient<tonic::transport::Channel>,
-    mut parser: &mut Ax25ParserClient<tonic::transport::Channel>,
+    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     opt: &Opt,
     index: &DirectoryIndex,
     reqs: &[Request],
@@ -474,13 +474,13 @@ async fn process_requests(
                 tag,
                 existing: _,
                 id,
-            } => match index.get_block(&id) {
+            } => match index.get_block(id) {
                 Ok(block) => {
                     handle_get(
-                        &mut client,
-                        &mut parser,
+                        client,
+                        parser,
                         &block,
-                        &dst,
+                        dst,
                         opt.source.clone(),
                         *tag,
                         opt.size,
@@ -492,13 +492,13 @@ async fn process_requests(
                     warn!("Unknown block {}: {:?}", id, e);
                 }
             },
-            Request::Meta { dst, hash } => match index.get_block(&hash) {
+            Request::Meta { dst, hash } => match index.get_block(hash) {
                 Ok(block) => {
                     handle_meta(
-                        &mut client,
-                        &mut parser,
+                        client,
+                        parser,
                         &block,
-                        &dst,
+                        dst,
                         opt.source.clone(),
                         hash.to_string(),
                         opt.size,
