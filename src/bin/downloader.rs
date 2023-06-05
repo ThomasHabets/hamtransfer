@@ -115,7 +115,10 @@ async fn receive_streamed_block(
         // Parse UI frame.
         //
         let parsed = parser
-            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .parse(tonic::Request::new(ax25::ParseRequest {
+                payload: frame,
+                check_fcs: true,
+            }))
             .await?
             .into_inner()
             .packet
@@ -275,19 +278,27 @@ async fn list(
         .await?;
     loop {
         let frame = receive_frame(&mut stream, timeout).await?;
+        debug!("List got some frame");
         let parsed = parser
-            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .parse(tonic::Request::new(ax25::ParseRequest {
+                payload: frame,
+                check_fcs: true,
+            }))
             .await?
             .into_inner()
             .packet
             .expect("surely the RPC reply has a packet");
         let ui = match parsed.frame_type {
             Some(ax25::packet::FrameType::Ui(ui)) => ui,
-            _ => continue,
+            _ => {
+                debug!("Not an UI frame");
+                continue;
+            }
         };
         let reply = match std::str::from_utf8(&ui.payload) {
             Ok(x) => x,
             _ => {
+                debug!("Not UTF8");
                 continue;
             }
         };
@@ -296,9 +307,13 @@ async fn list(
         }
         let m = match LIST_REPLY_RE.captures(reply) {
             Some(x) => x,
-            None => continue,
+            None => {
+                debug!("Not a list reply");
+                continue;
+            }
         };
         if m[1] != format!("{}", tag) {
+            debug!("Wrong tag");
             continue;
         }
         let list = reply.lines().collect::<Vec<&str>>();
@@ -327,7 +342,10 @@ async fn get_meta(
     loop {
         let frame = receive_frame(&mut stream, timeout).await?;
         let parsed = parser
-            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .parse(tonic::Request::new(ax25::ParseRequest {
+                payload: frame,
+                check_fcs: true,
+            }))
             .await?
             .into_inner()
             .packet

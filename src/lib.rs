@@ -36,6 +36,7 @@ pub async fn make_packet(
                 payload: payload.into_bytes(),
             })),
         }),
+        set_fcs: true,
     });
     Ok(parser.serialize(req).await?.into_inner().payload)
 }

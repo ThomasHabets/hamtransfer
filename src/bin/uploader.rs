@@ -67,7 +67,10 @@ async fn get_request(
     loop {
         let frame = stream.next().await.unwrap().unwrap().payload;
         let parsed = parser
-            .parse(tonic::Request::new(ax25::ParseRequest { payload: frame }))
+            .parse(tonic::Request::new(ax25::ParseRequest {
+                payload: frame,
+                check_fcs: true,
+            }))
             .await?
             .into_inner()
             .packet
@@ -137,6 +140,7 @@ async fn transmit(
         payload.extend(encoding_symbol);
         // TODO: surely we can default these values?
         let request = tonic::Request::new(SerializeRequest {
+            set_fcs: true,
             packet: Some(Packet {
                 dst: dst.to_string(),
                 src: src.clone(),
