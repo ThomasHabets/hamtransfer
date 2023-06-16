@@ -21,6 +21,10 @@ use tokio::time::Duration;
 struct Opt {
     #[structopt(short = "r", long = "router")]
     router: String,
+
+    #[structopt(short = "R", long = "tx_router", default_value = "")]
+    txrouter: String,
+
     #[structopt(short = "p", long = "parser")]
     parser: String,
 
@@ -47,7 +51,7 @@ struct Opt {
 }
 
 async fn request_block(
-    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    txclient: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
     src: &str,
@@ -62,7 +66,7 @@ async fn request_block(
         format!("G {} 0 {} {}", tag, existing, hash).to_string(),
     )
     .await?;
-    client
+    txclient
         .send(tonic::Request::new(ax25ms::SendRequest {
             frame: Some(ax25ms::Frame { payload: cmd }),
         }))
@@ -156,7 +160,7 @@ async fn receive_streamed_block(
 async fn download_block(
     opt: &Opt,
     stream: &mut mpsc::Receiver<ax25ms::Frame>,
-    mut client: RouterServiceClient<tonic::transport::Channel>,
+    mut txclient: RouterServiceClient<tonic::transport::Channel>,
     mut parser: Ax25ParserClient<tonic::transport::Channel>,
     hash: &str,
     size: usize,
@@ -165,7 +169,7 @@ async fn download_block(
     let mut decoder = raptor_code::SourceBlockDecoder::new(source_block_size);
     let tag = rand::thread_rng().gen::<u16>();
     request_block(
-        &mut client,
+        &mut txclient,
         &mut parser,
         &opt.dst,
         &opt.source,
@@ -197,7 +201,7 @@ async fn download_block(
             Err(DownloaderError::Timeout) => {
                 debug!("Requesting more");
                 request_block(
-                    &mut client,
+                    &mut txclient,
                     &mut parser,
                     &opt.dst,
                     &opt.source,
@@ -262,7 +266,7 @@ impl std::fmt::Display for DownloaderError {
 
 async fn list(
     stream: &mut mpsc::Receiver<ax25ms::Frame>,
-    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    txclient: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
     src: &str,
@@ -271,7 +275,7 @@ async fn list(
     let mut rng = rand::thread_rng();
     let tag = rng.gen::<u16>();
     let cmd = make_packet(parser, dst, src, format!("L {}", tag).to_string()).await?;
-    client
+    txclient
         .send(tonic::Request::new(ax25ms::SendRequest {
             frame: Some(ax25ms::Frame { payload: cmd }),
         }))
@@ -326,7 +330,7 @@ async fn list(
 
 async fn get_meta(
     stream: &mut mpsc::Receiver<ax25ms::Frame>,
-    client: &mut RouterServiceClient<tonic::transport::Channel>,
+    txclient: &mut RouterServiceClient<tonic::transport::Channel>,
     parser: &mut Ax25ParserClient<tonic::transport::Channel>,
     dst: &str,
     src: &str,
@@ -334,7 +338,7 @@ async fn get_meta(
     timeout: f32,
 ) -> Result<(usize, usize), DownloaderError> {
     let cmd = make_packet(parser, dst, src, format!("M {}", hash).to_string()).await?;
-    client
+    txclient
         .send(tonic::Request::new(ax25ms::SendRequest {
             frame: Some(ax25ms::Frame { payload: cmd }),
         }))
@@ -403,7 +407,13 @@ fn start_stream(
 
 #[tokio::main]
 async fn main() -> Result<(), DownloaderError> {
-    let opt = Opt::from_args();
+    let opt = {
+        let mut opt = Opt::from_args();
+        if opt.txrouter == "" {
+            opt.txrouter = opt.router.clone();
+        }
+        opt
+    };
 
     stderrlog::new()
         .module(module_path!())
@@ -415,18 +425,18 @@ async fn main() -> Result<(), DownloaderError> {
 
     info!("Connecting…");
     // TODO: merge clients.
-    let mut client = RouterServiceClient::connect(opt.router.clone()).await?;
-    let stream_client = RouterServiceClient::connect(opt.router.clone()).await?;
+    let mut txclient = RouterServiceClient::connect(opt.txrouter.clone()).await?;
+    let rxclient = RouterServiceClient::connect(opt.router.clone()).await?;
     let mut parser = Ax25ParserClient::connect(opt.parser.clone()).await?;
 
     info!("Getting metadata…");
 
-    let mut stream = start_stream(stream_client);
+    let mut stream = start_stream(rxclient);
 
     if opt.list {
         list(
             &mut stream,
-            &mut client,
+            &mut txclient,
             &mut parser,
             &opt.dst,
             &opt.source,
@@ -437,7 +447,7 @@ async fn main() -> Result<(), DownloaderError> {
     }
     let (source_block_size, total_size) = get_meta(
         &mut stream,
-        &mut client,
+        &mut txclient,
         &mut parser,
         &opt.dst,
         &opt.source,
@@ -452,7 +462,7 @@ async fn main() -> Result<(), DownloaderError> {
     let source_block = download_block(
         &opt,
         &mut stream,
-        client,
+        txclient,
         parser,
         &opt.roothash,
         total_size,
