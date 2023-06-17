@@ -1,0 +1,11 @@
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-DFS-2016",
+]
+deny = [
+     "AGPL-1.0",
+     "AGPL-3.0",
+]
