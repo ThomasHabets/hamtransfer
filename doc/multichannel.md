@@ -6,6 +6,13 @@ Last tested with these git hashes:
 * ax25ms 3d637afc2c2655f75a2c70fd25a2b334767574a8
 * radiostuff e10b06665bf88b615d791e30191a048c31433526
 
+## Results
+
+With three channels:
+
+10kB file in 7.518 seconds. That's including a needless roundtrip to
+get metadata. Just the request/response was 6.356 seconds, or 12.6kbps.
+
 ## Uploader
 
 ### GNURadio RR modem
