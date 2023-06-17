@@ -419,7 +419,7 @@ async fn main() -> Result<(), DownloaderError> {
         .module(module_path!())
         .quiet(false)
         .verbosity(3)
-        .timestamp(stderrlog::Timestamp::Second)
+        .timestamp(stderrlog::Timestamp::Millisecond)
         .init()
         .unwrap();
 
