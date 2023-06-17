@@ -39,6 +39,9 @@ struct Opt {
 
     #[structopt(short = "S", long = "source")]
     source: String,
+
+    #[structopt(long = "repeat", default_value = "1")]
+    repeat: usize,
 }
 
 fn float_to_usize(f: f64) -> Option<usize> {
@@ -160,12 +163,12 @@ async fn transmit(
         });
         let serd = parser.serialize(request).await?;
 
-        let request = tonic::Request::new(SendRequest {
+        let request = SendRequest {
             frame: Some(Frame {
                 payload: serd.into_inner().payload,
             }),
-        });
-        client.send(request).await?;
+        };
+        client.send(tonic::Request::new(request.clone())).await?;
         //println!("Sent esi {} of size {}", esi, &len);
         if true {
             let millis: u64 = 8000 * len as u64 / 9600;
@@ -286,6 +289,7 @@ async fn handle_meta(
     src: String,
     hash: String,
     packet_size: usize,
+    repeat: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = block.len();
     let max_source_symbols = max_source_syms(size, packet_size);
@@ -296,11 +300,12 @@ async fn handle_meta(
         format!("m {} {} {}", hash, max_source_symbols, size),
     )
     .await?;
-    client
-        .send(tonic::Request::new(ax25ms::SendRequest {
-            frame: Some(ax25ms::Frame { payload: reply }),
-        }))
-        .await?;
+    let req = ax25ms::SendRequest {
+        frame: Some(ax25ms::Frame { payload: reply }),
+    };
+    for i in 0..repeat {
+        client.send(tonic::Request::new(req.clone())).await?;
+    }
     Ok(())
 }
 
@@ -331,7 +336,7 @@ async fn handle_get(
         x.resize(padded_size, 0); // multiple of packet_size.
         x
     };
-    let packets = ((source_data.len() / packet_size) as f32 * 1.2 + 2.0) as usize; // TODO: tweak default overhead.
+    let packets = 3 * ((source_data.len() / packet_size) as f32 * 1.2 + 2.0) as usize; // TODO: tweak default overhead.
     debug!("Sending {} packets", packets);
 
     transmit(
@@ -502,6 +507,7 @@ async fn process_requests(
                         opt.source.clone(),
                         hash.to_string(),
                         opt.size,
+                        opt.repeat,
                     )
                     .await?;
                 }
