@@ -170,7 +170,7 @@ async fn transmit(
         };
         client.send(tonic::Request::new(request.clone())).await?;
         //println!("Sent esi {} of size {}", esi, &len);
-        if true {
+        if false {
             let millis: u64 = 8000 * len as u64 / 9600;
             task::sleep(Duration::from_millis(millis)).await;
         }
