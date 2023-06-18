@@ -1,5 +1,9 @@
 ![Multichannel overview](multichannel.png)
 
+Or if the radio doesn't have a built in TNC:
+
+![Direwolf overview](multichannel_direwolf.png)
+
 Last tested with these git hashes:
 * ax25ms-rust 59311862b34d7bf01df7706ac4f4eba8b7a92859
 * hamtransfer 4d3ba2b58ea5097d1202d83ec3a284582c3f3a5f
@@ -70,6 +74,29 @@ This is not a problem during data transmission, but it is when getting
 metadata or listing files.
 
 ## Downloader
+
+### Optional, if radio does not have a built in TNC
+
+Direwolf config something like this:
+
+```
+ADEVICE plughw:1,0
+PTT <your PTT config here>
+CHANNEL 0
+MYCALL M0XXX-2
+AGWPORT 8010
+KISSPORT 8011
+MODEM 1200
+```
+
+```
+direwolf -t 0 -p -c direwolf.conf
+```
+
+Try sending some packets with direwolf before trying to make this
+HOWTO work. You need to have working PTT. VOX will not work with
+Baofengs, in my experience. The beginning of the packet gets lost, and
+it continues to transmit for way too long after input stops.
 
 ### GNURadio multi receiver
 
