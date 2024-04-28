@@ -22,8 +22,8 @@ step by step to testing the current code.
 1. Start uploader, using the uploading ax25ms `serial` port:
    ```
    uploader \
-       --router localhost:12001 \
-       --parser localhost:12001 \
+       --router http://localhost:12001 \
+       --parser http://localhost:12001 \
 	   --source M0XXX-1 \
 	   --input testdata   # directory with data
    ```
@@ -31,8 +31,9 @@ step by step to testing the current code.
 1. Start downloader, using the downloading ax25ms `serial` port:
    ```
    downloader \
-       --router localhost:12001 \
-       --parser localhost:12001 \
+       --router http://localhost:12001 \
+       --parser http://localhost:12001 \
+       --source M0XXX-1
 	   --output test.out
 	   checksum-from-the-uploader-file-listing
    ```
