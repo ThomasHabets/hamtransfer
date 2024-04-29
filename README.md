@@ -97,6 +97,10 @@ extra roundtrip give best run 8024bps. 83% of theoretical max. Most of
 that is probably due to the fact that there's always that one
 roundtrip.
 
+## Blog post with example video
+
+https://blog.habets.se/2023/07/Multichannel-AX.25.html
+
 ## Protocol
 
 The protocol is being designed, so no point yet to describe it here.
