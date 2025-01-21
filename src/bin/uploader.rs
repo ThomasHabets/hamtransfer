@@ -14,33 +14,33 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::time::Duration;
-use structopt::StructOpt;
+use clap::Parser;
 use tokio_stream::StreamExt;
 
 use lib::{ax25, ax25ms, make_packet};
 
-#[derive(StructOpt, Debug)]
-#[structopt()]
+#[derive(clap::Parser, Debug)]
+#[command(version, about)]
 struct Opt {
-    #[structopt(short = "r", long = "router")]
+    #[clap(short, long = "router")]
     router: String,
 
-    #[structopt(short = "p", long = "parser")]
+    #[clap(short, long = "parser")]
     parser: String,
 
-    #[structopt(short = "i", long = "input")]
+    #[clap(short, long = "input")]
     input: String,
 
-    #[structopt(short = "s", long = "packet-size", default_value = "200")]
+    #[clap(short, long = "packet-size", default_value = "200")]
     size: usize,
 
-    #[structopt(short = "R", long = "repair", default_value = "50")]
+    #[clap(short = 'R', long = "repair", default_value = "50")]
     repair: usize,
 
-    #[structopt(short = "S", long = "source")]
+    #[clap(short = 'S', long = "source")]
     source: String,
 
-    #[structopt(long = "repeat", default_value = "1")]
+    #[clap(long = "repeat", default_value = "1")]
     repeat: usize,
 }
 
@@ -541,7 +541,7 @@ async fn process_requests(
 
 #[tokio::main]
 async fn main() -> Result<(), UploaderError> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     stderrlog::new()
         .module(module_path!())

@@ -12,38 +12,38 @@ use log::{debug, info, warn};
 use rand::Rng;
 use regex::Regex;
 use std::fs;
-use structopt::StructOpt;
+use clap::Parser;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
-#[derive(StructOpt, Debug)]
-#[structopt()]
+#[derive(Parser, Debug)]
+#[command(version, about)]
 struct Opt {
-    #[structopt(short = "r", long = "router")]
+    #[clap(short, long = "router")]
     router: String,
 
-    #[structopt(short = "R", long = "tx_router", default_value = "")]
+    #[clap(short = 'R', long = "tx_router", default_value = "")]
     txrouter: String,
 
-    #[structopt(short = "p", long = "parser")]
+    #[clap(short, long = "parser")]
     parser: String,
 
-    #[structopt(short = "s", long = "source")]
+    #[clap(short, long = "source")]
     source: String,
 
-    #[structopt(short = "o", long = "output")]
+    #[clap(short, long = "output")]
     output: String,
 
-    #[structopt(short = "d", long = "dst", default_value = "CQ")]
+    #[clap(short, long = "dst", default_value = "CQ")]
     dst: String,
 
-    #[structopt(long = "packet_loss", default_value = "0.0")]
+    #[clap(long = "packet_loss", default_value = "0.0")]
     packet_loss: f32,
 
-    #[structopt(long = "timeout", default_value = "2.0")]
+    #[clap(long = "timeout", default_value = "2.0")]
     timeout: f32,
 
-    #[structopt(short = "l", long = "list")]
+    #[clap(short, long = "list")]
     list: bool,
 
     // Positional argument.
@@ -408,7 +408,7 @@ fn start_stream(
 #[tokio::main]
 async fn main() -> Result<(), DownloaderError> {
     let opt = {
-        let mut opt = Opt::from_args();
+        let mut opt = Opt::parse();
         if opt.txrouter == "" {
             opt.txrouter = opt.router.clone();
         }
