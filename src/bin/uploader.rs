@@ -303,7 +303,7 @@ async fn handle_meta(
     let req = ax25ms::SendRequest {
         frame: Some(ax25ms::Frame { payload: reply }),
     };
-    for i in 0..repeat {
+    for _ in 0..repeat {
         client.send(tonic::Request::new(req.clone())).await?;
     }
     Ok(())
