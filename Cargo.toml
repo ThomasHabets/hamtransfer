@@ -22,7 +22,7 @@ stderrlog = "0.6"
 #sqlite = "0.30.4"
 clap = { version = "4", features = ["derive"] }
 #tokio = "1.28.1"
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
 tonic = "0.9"
 
