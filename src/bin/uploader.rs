@@ -6,6 +6,7 @@ use ax25::SerializeRequest;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::Frame;
 use ax25ms::SendRequest;
+use clap::Parser;
 use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use rand::prelude::SliceRandom;
@@ -14,7 +15,6 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::time::Duration;
-use clap::Parser;
 use tokio_stream::StreamExt;
 
 use lib::{ax25, ax25ms, make_packet};
@@ -121,7 +121,7 @@ async fn transmit(
     // * total size
     // * packet_size is implicitly sent by seeing the block size.
 
-    let mut encoder = raptor_code::SourceBlockEncoder::new(&source_data, max_source_symbols);
+    let mut encoder = raptor_code::SourceBlockEncoder::new(&source_data, max_source_symbols)?;
     let n = (encoder.nb_source_symbols() + nb_repair) as u16;
 
     // Transmit RPC.

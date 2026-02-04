@@ -2,6 +2,7 @@ use ax25::ax25_parser_client::Ax25ParserClient;
 use ax25::packet::FrameType::Ui;
 use ax25ms::router_service_client::RouterServiceClient;
 use ax25ms::StreamRequest;
+use clap::Parser;
 use futures::{pin_mut, select};
 use futures_timer::Delay;
 use futures_util::FutureExt;
@@ -12,7 +13,6 @@ use log::{debug, info, warn};
 use rand::Rng;
 use regex::Regex;
 use std::fs;
-use clap::Parser;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
